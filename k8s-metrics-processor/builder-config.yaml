@@ -1,7 +1,7 @@
 # builder-config.yaml
 dist:
   name: custom-otelcol
-  description: Custom OpenTelemetry Collector with Parquet exporter
+  description: Custom OpenTelemetry Collector
   output_path: ./custom-collector
   otelcol_version: 0.91.0
 
@@ -9,9 +9,6 @@ exporters:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/debugexporter v0.91.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/otlphttpexporter v0.91.0
   - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.91.0
-  # Your custom exporter
-  - gomod: github.com/yourusername/parquet-exporter v0.0.0
-    path: ./parquet-exporter
 
 processors:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/batchprocessor v0.91.0

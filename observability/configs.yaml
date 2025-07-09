@@ -5,22 +5,16 @@ data:
       debug:
         verbosity: detailed
       otlphttp/custom:
-        endpoint: http://host.docker.internal:8080/api/1.2/accounts/1234/connections/4567?type=
+        endpoint: http://host.docker.internal:8080/v1/metrics
         headers:
-          Authentication: Bearer randstr
+          Authorization: Bearer rand-token-here
         encoding: json
         compression: none
-      parquet:
-        endpoint: http://localhost:8080/telemetry
-        headers:
-          Authorization: Bearer your-token-here
-        timeout: 30s
-        batch_size: 1000
-        compression: snappy
         
     extensions:
       health_check:
         endpoint: ${env:MY_POD_IP}:13133
+        
     processors:
       batch: {}
       k8sattributes:
@@ -60,10 +54,7 @@ data:
         check_interval: 5s
         limit_percentage: 80
         spike_limit_percentage: 25
-      transform:
-        metric_statements:
-        - context: metric
-          statements: null
+        
     receivers:
       k8s_cluster:
         allocatable_types_to_report: []
@@ -84,6 +75,7 @@ data:
         protocols:
           grpc: null
           http: null
+          
     service:
       extensions:
       - health_check
@@ -92,10 +84,8 @@ data:
           exporters:
           - debug
           - otlphttp/custom
-          - parquet
           processors:
           - k8sattributes
-          - transform
           - batch
           receivers:
           - kubeletstats
@@ -105,7 +95,6 @@ data:
           exporters:
           - debug
           - otlphttp/custom
-          - parquet
           processors:
           - k8sattributes
           receivers:
@@ -114,7 +103,6 @@ data:
           exporters:
           - debug
           - otlphttp/custom
-          - parquet
           processors:
           - k8sattributes
           receivers:
