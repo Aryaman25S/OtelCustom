@@ -39,8 +39,10 @@ spec:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: status.hostIP
-          image: otel/opentelemetry-collector-contrib:0.123.0
-          imagePullPolicy: IfNotPresent
+          # Use your custom collector image instead of standard one
+          image: custom-otelcol:latest
+          # Use local image for development
+          imagePullPolicy: Never
           livenessProbe:
             failureThreshold: 3
             httpGet:
