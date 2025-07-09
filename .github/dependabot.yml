@@ -1,0 +1,55 @@
+version: 2
+updates:
+
+  # Maintain dependencies for GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    labels:
+      - "GHA"
+    reviewers:
+      - "esigo"
+    assignees:
+      - "esigo"
+    schedule:
+      interval: "daily"
+
+  # Maintain dependencies for go
+  - package-ecosystem: "gomod"
+    directory: "/micro_app/A"
+    labels:
+      - "micro_app"
+      - "dependencies"
+      - "Go"
+    reviewers:
+      - "esigo"
+    assignees:
+      - "esigo"
+    schedule:
+      interval: "daily"
+
+  # Maintain dependencies for go
+  - package-ecosystem: "gomod"
+    directory: "/micro_app/B"
+    labels:
+      - "micro_app"
+      - "dependencies"
+      - "Go"
+    reviewers:
+      - "esigo"
+    assignees:
+      - "esigo"
+    schedule:
+      interval: "daily"
+
+  # Maintain dependencies for Docker
+  - package-ecosystem: "docker"
+    directory: "/micro_app/A/Dockerfile.app"
+    labels:
+      - "micro_app"
+      - "Docker"
+    reviewers:
+      - "esigo"
+    assignees:
+      - "esigo"
+    schedule:
+      interval: "daily"

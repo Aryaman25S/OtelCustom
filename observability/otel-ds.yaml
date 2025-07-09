@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: opentelemetry-collector-agent
+  namespace: otel2
+  labels:
+    component: otel
+spec:
+  selector:
+    matchLabels:
+      name: opentelemetry-collector-agent
+  template:
+    metadata:
+      labels:
+        name: opentelemetry-collector-agent
+    spec:
+      serviceAccountName: opentelemetry-collector-agent
+      containers:
+        - args:
+            - '--config=/conf/relay.yaml'
+          env:
+            - name: MY_POD_IP
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.podIP
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: K8S_NODE_IP
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.hostIP
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.hostIP
+          image: otel/opentelemetry-collector-contrib:0.123.0
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /
+              port: 13133
+              scheme: HTTP
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          name: opentelemetry-collector
+          ports:
+            - containerPort: 4317
+              hostPort: 4317
+              name: otlp
+              protocol: TCP
+            - containerPort: 4318
+              hostPort: 4318
+              name: otlp-http
+              protocol: TCP
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /
+              port: 13133
+              scheme: HTTP
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          volumeMounts:
+            - mountPath: /conf
+              name: opentelemetry-collector-configmap
+          resources: {}
+          securityContext: {}
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - configMap:
+            defaultMode: 420
+            items:
+              - key: relay
+                path: relay.yaml
+            name: opentelemetry-collector-agent
+          name: opentelemetry-collector-configmap
+  updateStrategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+    type: RollingUpdate

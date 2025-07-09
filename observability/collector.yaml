@@ -1,0 +1,66 @@
+#apiVersion: opentelemetry.io/v1beta1
+#kind: OpenTelemetryCollector
+#metadata:
+#  name: otel-coll
+#  namespace: otel2
+#spec:
+#  mode: deployment #it was 'deployment' before
+#  config:
+#    env:
+#      - name: NODE_IP
+#        valueFrom:
+#          fieldRef:
+#            apiVersion: v1
+#            fieldPath: spec.nodeName
+#    receivers:
+#      kubeletstats:
+#        auth_type: serviceAccount
+#        endpoint: https://${env:NODE_IP}:10250
+#        insecure_skip_verify: true
+#        metric_groups:
+#          - container
+#          - pod
+#          - node
+#      k8s_cluster:
+#          allocatable_types_to_report: []
+#          auth_type: kubeConfig
+#          node_conditions_to_report: []
+#      otlp:
+#        protocols:
+#          grpc: {}
+#          http: {}
+#    processors: {}
+#    exporters:
+##      jaeger:
+##        endpoint: jaeger-all-in-one-collector.observability.svc:14250
+##        tls:
+##          insecure: true
+##      zipkin:
+##        endpoint: http://zipkin.observability.svc:9411/api/v2/spans
+##      otlp:
+##        endpoint: tempo.observability.svc:4317
+##        tls:
+##          insecure: true
+##      logging:
+##        loglevel: debug  # Logs telemetry payloads to stdout for visibility
+##      otlphttp/custom:
+##        endpoint: http://localhost:8088
+##        tls:
+##          insecure: true
+#      debug:
+#        verbosity: detailed
+#
+#    service:
+#      telemetry:
+#          metrics:
+#            readers:
+#              - pull:
+#                  exporter:
+#                    prometheus:
+#                      host: 0.0.0.0
+#                      port: 8888
+#      pipelines:
+#        metrics:
+#          receivers: [k8s_cluster, kubeletstats]
+#          processors: []
+#          exporters: [debug]
