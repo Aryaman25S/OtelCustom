@@ -1,18 +1,16 @@
-# ultra-minimal-config.yaml - just the essentials
 dist:
   name: custom-otelcol
-  description: Ultra Minimal Custom OpenTelemetry Collector
+  description: Custom OpenTelemetry Collector with HTTP Exporter
   output_path: ./custom-collector
   otelcol_version: 0.129.0
 
 exporters:
   - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.129.0
   - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.129.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.129.0
 
 processors:
   - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.129.0
 
 receivers:
   - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.129.0
-
-# Remove extensions for now - we can add them back later

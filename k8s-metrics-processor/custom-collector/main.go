@@ -19,7 +19,7 @@ import (
 func main() {
 	info := component.BuildInfo{
 		Command:     "custom-otelcol",
-		Description: "Ultra Minimal Custom OpenTelemetry Collector",
+		Description: "Custom OpenTelemetry Collector with HTTP Exporter",
 		Version:     "",
 	}
 
