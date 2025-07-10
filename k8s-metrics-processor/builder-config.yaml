@@ -1,16 +1,26 @@
+# builder-config.yaml - EXACT match to your working collector v0.123.0
 dist:
   name: custom-otelcol
-  description: Custom OpenTelemetry Collector with HTTP Exporter
+  description: Custom OpenTelemetry Collector v0.123.0 (Kubernetes-enabled)
   output_path: ./custom-collector
-  otelcol_version: 0.129.0
+  otelcol_version: 0.123.0
 
 exporters:
-  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.129.0
-  - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.129.0
-  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.129.0
+  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.123.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.123.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.123.0
 
 processors:
-  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.129.0
+  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.123.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/k8sattributesprocessor v0.123.0
+  - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.123.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.123.0
 
 receivers:
-  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.129.0
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.123.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/k8sclusterreceiver v0.123.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/k8seventsreceiver v0.123.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/kubeletstatsreceiver v0.123.0
+
+extensions:
+  # - gomod: go.opentelemetry.io/collector/extension/healthcheckextension v0.123.0
