@@ -4,7 +4,7 @@ data:
     exporters:
       debug:
         verbosity: detailed
-      otlp/custom:
+      otlphttp/custom:
         endpoint: http://host.docker.internal:8080/v1/metrics
         headers:
           Authorization: Bearer rand-token-here
@@ -83,7 +83,7 @@ data:
         metrics:
           exporters:
           - debug
-          - otlp/custom
+          - otlphttp/custom
           processors:
           - k8sattributes
           - batch
@@ -94,7 +94,7 @@ data:
         logs:
           exporters:
           - debug
-          - otlp/custom
+          - otlphttp/custom
           processors:
           - k8sattributes
           receivers:
@@ -102,7 +102,7 @@ data:
         traces:
           exporters:
           - debug
-          - otlp/custom
+          - otlphttp/custom
           processors:
           - k8sattributes
           receivers:
