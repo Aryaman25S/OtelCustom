@@ -10,6 +10,10 @@ data:
           Authorization: Bearer rand-token-here
         encoding: json
         compression: none
+      custom:
+        endpoint: "http://localhost:8080"
+        enabled: true
+        custom_field: "my-custom-value"
         
     extensions:
       health_check:
@@ -84,6 +88,7 @@ data:
           exporters:
           - debug
           - otlphttp/custom
+          - custom  # Custom exporter ONLY for metrics
           processors:
           - k8sattributes
           - batch
@@ -95,6 +100,7 @@ data:
           exporters:
           - debug
           - otlphttp/custom
+          # Remove custom exporter from logs pipeline
           processors:
           - k8sattributes
           receivers:
@@ -103,6 +109,7 @@ data:
           exporters:
           - debug
           - otlphttp/custom
+          # Remove custom exporter from traces pipeline
           processors:
           - k8sattributes
           receivers:

@@ -7,6 +7,7 @@ go 1.23.0
 toolchain go1.24.4
 
 require (
+	customexporter v0.1.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckextension v0.128.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/processor/k8sattributesprocessor v0.128.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.128.0
@@ -232,3 +233,5 @@ require (
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.3 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
+
+replace customexporter v0.1.0 => /Users/aryaman/Documents/Falkonry_Internship/nginx-example/k8s-metrics-processor/custom-exporter
