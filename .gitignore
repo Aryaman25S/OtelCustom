@@ -1,1 +1,59 @@
 *.tar
+# OpenTelemetry Collector Binaries
+k8s-metrics-processor/custom-collector/custom-otelcol
+k8s-metrics-processor/ocb*
+*.exe
+
+# Go Build Artifacts
+k8s-metrics-processor/custom-collector/components.go
+k8s-metrics-processor/custom-collector/main.go
+k8s-metrics-processor/custom-collector/main_*.go
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Go Module Cache
+go.sum
+
+# Generated Protocol Buffer Files (these can be regenerated)
+k8s-metrics-processor/opentelemetry/
+k8s-metrics-processor/opentelemetry-proto/
+
+# Old/Backup Files
+k8s-metrics-processor/go_old.*
+k8s-metrics-processor/main_old*.go
+
+# Network Captures
+*.pcap
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Log Files
+*.log
+
+# Docker Build Context (if large)
+.dockerignore
+
+# Personal/Local Configuration
+*.local
+.env
+
+# Temporary Files
+tmp/
+temp/
+*.tmp
