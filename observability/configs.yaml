@@ -86,7 +86,7 @@ data:
       pipelines:
         metrics:
           exporters:
-          - debug
+          # - debug
           - custom  # Custom exporter ONLY for metrics
           processors:
           - k8sattributes
@@ -95,24 +95,24 @@ data:
           - kubeletstats
           - k8s_cluster
           - otlp
-        logs:
-          exporters:
-          - debug
-          - otlphttp/custom
+        # logs:
+          # exporters:
+          # - debug
+          # - otlphttp/custom
           # Remove custom exporter from logs pipeline
-          processors:
-          - k8sattributes
-          receivers:
-          - k8s_events
-        traces:
-          exporters:
-          - debug
-          - otlphttp/custom
+          # processors:
+          # - k8sattributes
+          # receivers:
+          # - k8s_events
+        # traces:
+          # exporters:
+          # - debug
+          # - otlphttp/custom
           # Remove custom exporter from traces pipeline
-          processors:
-          - k8sattributes
-          receivers:
-          - otlp
+          # processors:
+          # - k8sattributes
+          # receivers:
+          # - otlp
       telemetry:
         metrics:
           readers:
