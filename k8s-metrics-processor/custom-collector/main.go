@@ -19,7 +19,7 @@ import (
 func main() {
 	info := component.BuildInfo{
 		Command:     "custom-otelcol",
-		Description: "Custom OpenTelemetry Collector v0.128.0 (Kubernetes-enabled + Custom Exporter)",
+		Description: "Custom OpenTelemetry Collector v0.129.0 (Kubernetes-enabled + Custom Exporter)",
 		Version:     "",
 	}
 

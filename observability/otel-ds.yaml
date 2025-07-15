@@ -39,9 +39,8 @@ spec:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: status.hostIP
-          # Use your custom collector image instead of standard one
           image: custom-otelcol:latest
-          # Use local image for development
+          # Force pull new image
           imagePullPolicy: Never
           livenessProbe:
             failureThreshold: 3

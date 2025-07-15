@@ -69,7 +69,7 @@ data:
       kubeletstats:
         auth_type: kubeConfig
         collection_interval: 20s
-        endpoint: https://${env:NODE_IP}:10250
+        endpoint: docker-desktop
         insecure_skip_verify: true
         metric_groups:
         - container
