@@ -2,6 +2,7 @@ package customexporter
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
 )
@@ -22,26 +24,37 @@ type metricsExporter struct {
 	httpClient *http.Client
 }
 
-// Start implements component.Component
+// logsExporter implements the logs exporter interfaces
+type logsExporter struct {
+	config     *Config
+	logger     *zap.Logger
+	httpClient *http.Client
+}
+
+// ========================= METRICS EXPORTER =========================
+
+// Start implements component.Component for metrics
 func (e *metricsExporter) Start(ctx context.Context, host component.Host) error {
-	// Initialize HTTP client for sending data
 	e.httpClient = &http.Client{
-		Timeout: 30 * time.Second, // Increased timeout for larger payloads
+		Timeout: 30 * time.Second,
 	}
 	
 	e.logger.Info("Custom metrics exporter started",
 		zap.String("endpoint", e.config.Endpoint),
-		zap.Bool("enabled", e.config.Enabled))
+		zap.Bool("enabled", e.config.Enabled),
+		zap.String("encoding", e.getEncoding()),
+		zap.String("compression", e.getCompression()),
+		zap.Int("header_count", len(e.config.Headers)))
 	return nil
 }
 
-// Shutdown implements component.Component
+// Shutdown implements component.Component for metrics
 func (e *metricsExporter) Shutdown(ctx context.Context) error {
 	e.logger.Info("Custom metrics exporter shutdown")
 	return nil
 }
 
-// Capabilities implements the consumer interface
+// Capabilities implements the consumer interface for metrics
 func (e *metricsExporter) Capabilities() consumer.Capabilities {
 	return consumer.Capabilities{MutatesData: false}
 }
@@ -72,7 +85,7 @@ func (e *metricsExporter) ConsumeMetrics(ctx context.Context, md pmetric.Metrics
 	)
 
 	// Export the actual metric data
-	err := e.exportToCustomEndpoint(ctx, md, metricCount, resourceMetrics.Len())
+	err := e.exportMetricsToCustomEndpoint(ctx, md, metricCount, resourceMetrics.Len())
 	if err != nil {
 		e.logger.Error("Failed to export metrics", zap.Error(err))
 		return err
@@ -82,42 +95,106 @@ func (e *metricsExporter) ConsumeMetrics(ctx context.Context, md pmetric.Metrics
 	return nil
 }
 
-// exportToCustomEndpoint sends comprehensive metrics data to your Python server
-func (e *metricsExporter) exportToCustomEndpoint(ctx context.Context, md pmetric.Metrics, metricCount, resourceCount int) error {
+// exportMetricsToCustomEndpoint sends comprehensive metrics data to your Python server
+func (e *metricsExporter) exportMetricsToCustomEndpoint(ctx context.Context, md pmetric.Metrics, metricCount, resourceCount int) error {
 	// Create comprehensive metrics payload
 	payload := map[string]interface{}{
-		"timestamp":      time.Now().Unix(),
-		"source":         "custom-go-exporter",
-		"metric_count":   metricCount,
-		"resource_count": resourceCount,
-		"endpoint":       e.config.Endpoint,
-		"custom_field":   e.config.CustomField,
-		"kubernetes_summary": e.extractK8sSummary(md),
-		"actual_metrics":     e.extractActualMetrics(md), // Full metric data
+		"type":               "metrics",
+		"timestamp":          time.Now().Unix(),
+		"source":             "custom-go-exporter",
+		"metric_count":       metricCount,
+		"resource_count":     resourceCount,
+		"endpoint":           e.config.Endpoint,
+		"custom_field":       e.config.CustomField,
+		"encoding":           e.getEncoding(),
+		"compression":        e.getCompression(),
+		"kubernetes_summary": e.extractK8sSummaryFromMetrics(md),
+		"actual_metrics":     e.extractActualMetrics(md),
 	}
 
-	// Convert to JSON
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal metrics payload: %w", err)
+	return e.sendToEndpoint(ctx, payload, "/custom-metrics")
+}
+
+// sendToEndpoint sends data to the Python server (metrics version)
+func (e *metricsExporter) sendToEndpoint(ctx context.Context, payload map[string]interface{}, path string) error {
+	// Convert to JSON (encoding support can be extended later)
+	var data []byte
+	var err error
+	
+	switch e.getEncoding() {
+	case "json":
+		data, err = json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("failed to marshal payload as JSON: %w", err)
+		}
+	default:
+		// Default to JSON
+		data, err = json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("failed to marshal payload: %w", err)
+		}
 	}
 
-	// Log payload size
+	// Apply compression if configured
+	var requestBody []byte
+	contentEncoding := ""
+	
+	switch e.getCompression() {
+	case "gzip":
+		var buf bytes.Buffer
+		gzipWriter := gzip.NewWriter(&buf)
+		if _, err := gzipWriter.Write(data); err != nil {
+			return fmt.Errorf("failed to gzip payload: %w", err)
+		}
+		if err := gzipWriter.Close(); err != nil {
+			return fmt.Errorf("failed to close gzip writer: %w", err)
+		}
+		requestBody = buf.Bytes()
+		contentEncoding = "gzip"
+		
+		e.logger.Debug("Applied gzip compression",
+			zap.Int("original_size", len(data)),
+			zap.Int("compressed_size", len(requestBody)),
+			zap.Float64("compression_ratio", float64(len(requestBody))/float64(len(data))))
+			
+	case "none", "":
+		requestBody = data
+	default:
+		e.logger.Warn("Unsupported compression type, using no compression",
+			zap.String("compression", e.config.Compression))
+		requestBody = data
+	}
+
+	// Log payload info
 	e.logger.Debug("Sending metrics payload",
-		zap.Int("payload_size_bytes", len(jsonData)),
-		zap.Int("metric_count", metricCount))
+		zap.Int("payload_size_bytes", len(requestBody)),
+		zap.String("path", path),
+		zap.String("encoding", e.getEncoding()),
+		zap.String("compression", contentEncoding))
 
 	// Send to Python server
-	url := "http://host.docker.internal:8080/custom-metrics"
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
+	url := "http://host.docker.internal:8080" + path
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(requestBody))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
+	// Set standard headers
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "CustomGoExporter/2.0")
+	req.Header.Set("User-Agent", "CustomGoExporter/2.1")
 	req.Header.Set("X-Custom-Source", "kubernetes-collector")
-	req.Header.Set("X-Metric-Count", fmt.Sprintf("%d", metricCount))
+	req.Header.Set("X-Metric-Count", fmt.Sprintf("%d", len(payload)))
+	
+	// Set compression header if applied
+	if contentEncoding != "" {
+		req.Header.Set("Content-Encoding", contentEncoding)
+	}
+	
+	// Apply custom headers from configuration
+	for key, value := range e.config.Headers {
+		req.Header.Set(key, value)
+		e.logger.Debug("Applied custom header", zap.String("header", key), zap.String("value", value))
+	}
 
 	resp, err := e.httpClient.Do(req)
 	if err != nil {
@@ -132,10 +209,383 @@ func (e *metricsExporter) exportToCustomEndpoint(ctx context.Context, md pmetric
 	e.logger.Debug("Successfully sent metrics to custom endpoint",
 		zap.String("url", url),
 		zap.Int("status_code", resp.StatusCode),
-		zap.Int("payload_size", len(jsonData)))
+		zap.Int("payload_size", len(requestBody)),
+		zap.String("content_encoding", contentEncoding))
 
 	return nil
 }
+
+// getEncoding returns the configured encoding or default
+func (e *metricsExporter) getEncoding() string {
+	if e.config.Encoding == "" {
+		return "json"
+	}
+	return e.config.Encoding
+}
+
+// getCompression returns the configured compression or default
+func (e *metricsExporter) getCompression() string {
+	if e.config.Compression == "" {
+		return "none"
+	}
+	return e.config.Compression
+}
+
+// ========================= LOGS EXPORTER =========================
+
+// Start implements component.Component for logs
+func (e *logsExporter) Start(ctx context.Context, host component.Host) error {
+	e.httpClient = &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	
+	e.logger.Info("Custom logs exporter started",
+		zap.String("endpoint", e.config.Endpoint),
+		zap.Bool("enabled", e.config.Enabled),
+		zap.String("encoding", e.getEncoding()),
+		zap.String("compression", e.getCompression()),
+		zap.Int("header_count", len(e.config.Headers)))
+	return nil
+}
+
+// Shutdown implements component.Component for logs
+func (e *logsExporter) Shutdown(ctx context.Context) error {
+	e.logger.Info("Custom logs exporter shutdown")
+	return nil
+}
+
+// Capabilities implements the consumer interface for logs
+func (e *logsExporter) Capabilities() consumer.Capabilities {
+	return consumer.Capabilities{MutatesData: false}
+}
+
+// ConsumeLogs implements the logs consumer interface
+func (e *logsExporter) ConsumeLogs(ctx context.Context, ld plog.Logs) error {
+	if !e.config.Enabled {
+		e.logger.Debug("Custom exporter disabled, skipping logs")
+		return nil
+	}
+
+	// Count the logs for logging
+	logCount := 0
+	resourceLogs := ld.ResourceLogs()
+	for i := 0; i < resourceLogs.Len(); i++ {
+		rl := resourceLogs.At(i)
+		scopeLogs := rl.ScopeLogs()
+		for j := 0; j < scopeLogs.Len(); j++ {
+			sl := scopeLogs.At(j)
+			logCount += sl.LogRecords().Len()
+		}
+	}
+
+	e.logger.Info("Custom exporter processing logs",
+		zap.Int("log_count", logCount),
+		zap.Int("resource_count", resourceLogs.Len()),
+		zap.String("endpoint", e.config.Endpoint),
+	)
+
+	// Export the actual log data
+	err := e.exportLogsToCustomEndpoint(ctx, ld, logCount, resourceLogs.Len())
+	if err != nil {
+		e.logger.Error("Failed to export logs", zap.Error(err))
+		return err
+	}
+
+	e.logger.Info("Successfully exported logs with actual data to custom endpoint")
+	return nil
+}
+
+// exportLogsToCustomEndpoint sends comprehensive logs data to your Python server
+func (e *logsExporter) exportLogsToCustomEndpoint(ctx context.Context, ld plog.Logs, logCount, resourceCount int) error {
+	// Create comprehensive logs payload
+	payload := map[string]interface{}{
+		"type":               "logs",
+		"timestamp":          time.Now().Unix(),
+		"source":             "custom-go-exporter",
+		"log_count":          logCount,
+		"resource_count":     resourceCount,
+		"endpoint":           e.config.Endpoint,
+		"custom_field":       e.config.CustomField,
+		"encoding":           e.getEncoding(),
+		"compression":        e.getCompression(),
+		"kubernetes_summary": e.extractK8sSummaryFromLogs(ld),
+		"actual_logs":        e.extractActualLogs(ld),
+	}
+
+	return e.sendToEndpointLogs(ctx, payload, "/custom-logs")
+}
+
+// sendToEndpointLogs sends data to the Python server (logs version)
+func (e *logsExporter) sendToEndpointLogs(ctx context.Context, payload map[string]interface{}, path string) error {
+	// Convert to JSON (encoding support can be extended later)
+	var data []byte
+	var err error
+	
+	switch e.getEncoding() {
+	case "json":
+		data, err = json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("failed to marshal logs payload as JSON: %w", err)
+		}
+	default:
+		// Default to JSON
+		data, err = json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("failed to marshal logs payload: %w", err)
+		}
+	}
+
+	// Apply compression if configured
+	var requestBody []byte
+	contentEncoding := ""
+	
+	switch e.getCompression() {
+	case "gzip":
+		var buf bytes.Buffer
+		gzipWriter := gzip.NewWriter(&buf)
+		if _, err := gzipWriter.Write(data); err != nil {
+			return fmt.Errorf("failed to gzip logs payload: %w", err)
+		}
+		if err := gzipWriter.Close(); err != nil {
+			return fmt.Errorf("failed to close gzip writer: %w", err)
+		}
+		requestBody = buf.Bytes()
+		contentEncoding = "gzip"
+		
+		e.logger.Debug("Applied gzip compression to logs",
+			zap.Int("original_size", len(data)),
+			zap.Int("compressed_size", len(requestBody)),
+			zap.Float64("compression_ratio", float64(len(requestBody))/float64(len(data))))
+			
+	case "none", "":
+		requestBody = data
+	default:
+		e.logger.Warn("Unsupported compression type, using no compression",
+			zap.String("compression", e.config.Compression))
+		requestBody = data
+	}
+
+	// Log payload info
+	e.logger.Debug("Sending logs payload",
+		zap.Int("payload_size_bytes", len(requestBody)),
+		zap.String("path", path),
+		zap.String("encoding", e.getEncoding()),
+		zap.String("compression", contentEncoding))
+
+	// Send to Python server
+	url := "http://host.docker.internal:8080" + path
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(requestBody))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set standard headers
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "CustomGoExporter/2.1")
+	req.Header.Set("X-Custom-Source", "kubernetes-collector")
+	req.Header.Set("X-Log-Count", fmt.Sprintf("%d", len(payload)))
+	
+	// Set compression header if applied
+	if contentEncoding != "" {
+		req.Header.Set("Content-Encoding", contentEncoding)
+	}
+	
+	// Apply custom headers from configuration
+	for key, value := range e.config.Headers {
+		req.Header.Set(key, value)
+		e.logger.Debug("Applied custom header to logs", zap.String("header", key), zap.String("value", value))
+	}
+
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("server returned status %d", resp.StatusCode)
+	}
+
+	e.logger.Debug("Successfully sent logs to custom endpoint",
+		zap.String("url", url),
+		zap.Int("status_code", resp.StatusCode),
+		zap.Int("payload_size", len(requestBody)),
+		zap.String("content_encoding", contentEncoding))
+
+	return nil
+}
+
+// getEncoding returns the configured encoding or default (logs version)
+func (e *logsExporter) getEncoding() string {
+	if e.config.Encoding == "" {
+		return "json"
+	}
+	return e.config.Encoding
+}
+
+// getCompression returns the configured compression or default (logs version)
+func (e *logsExporter) getCompression() string {
+	if e.config.Compression == "" {
+		return "none"
+	}
+	return e.config.Compression
+}
+
+// ========================= LOGS EXTRACTION FUNCTIONS =========================
+
+// extractActualLogs extracts complete log data including content, severity, and timestamps
+func (e *logsExporter) extractActualLogs(ld plog.Logs) []map[string]interface{} {
+	var actualLogs []map[string]interface{}
+
+	resourceLogs := ld.ResourceLogs()
+	for i := 0; i < resourceLogs.Len(); i++ {
+		rl := resourceLogs.At(i)
+		
+		// Extract resource attributes (pod name, namespace, etc.)
+		resourceAttrs := make(map[string]string)
+		rl.Resource().Attributes().Range(func(k string, v pcommon.Value) bool {
+			resourceAttrs[k] = v.AsString()
+			return true
+		})
+
+		scopeLogs := rl.ScopeLogs()
+		for j := 0; j < scopeLogs.Len(); j++ {
+			sl := scopeLogs.At(j)
+			
+			// Get scope information
+			scope := sl.Scope()
+			scopeInfo := map[string]string{
+				"name":    scope.Name(),
+				"version": scope.Version(),
+			}
+
+			logRecords := sl.LogRecords()
+			for k := 0; k < logRecords.Len(); k++ {
+				logRecord := logRecords.At(k)
+				
+				logData := map[string]interface{}{
+					"timestamp":          logRecord.Timestamp(),
+					"observed_timestamp": logRecord.ObservedTimestamp(),
+					"severity_text":      logRecord.SeverityText(),
+					"severity_number":    logRecord.SeverityNumber(),
+					"body":               e.extractLogBody(logRecord.Body()),
+					"resource":           resourceAttrs,
+					"scope":              scopeInfo,
+					"attributes":         e.extractAttributesLogs(logRecord.Attributes()),
+					"trace_id":           logRecord.TraceID().String(),
+					"span_id":            logRecord.SpanID().String(),
+					"flags":              logRecord.Flags(),
+				}
+				
+				actualLogs = append(actualLogs, logData)
+			}
+		}
+	}
+
+	return actualLogs
+}
+
+// extractLogBody extracts the log message body (FIXED API methods)
+func (e *logsExporter) extractLogBody(body pcommon.Value) interface{} {
+	switch body.Type() {
+	case pcommon.ValueTypeStr:
+		return body.AsString()
+	case pcommon.ValueTypeInt:
+		return body.Int() // FIXED: was IntValue()
+	case pcommon.ValueTypeDouble:
+		return body.Double() // FIXED: was DoubleValue()
+	case pcommon.ValueTypeBool:
+		return body.Bool() // FIXED: was BoolValue()
+	case pcommon.ValueTypeMap:
+		result := make(map[string]interface{})
+		body.Map().Range(func(k string, v pcommon.Value) bool { // FIXED: was MapValue()
+			result[k] = e.extractLogBody(v)
+			return true
+		})
+		return result
+	case pcommon.ValueTypeSlice:
+		slice := body.Slice() // FIXED: was SliceValue()
+		result := make([]interface{}, slice.Len())
+		for i := 0; i < slice.Len(); i++ {
+			result[i] = e.extractLogBody(slice.At(i))
+		}
+		return result
+	default:
+		return body.AsString()
+	}
+}
+
+// extractAttributesLogs converts OTEL attributes to a string map (logs version)
+func (e *logsExporter) extractAttributesLogs(attrs pcommon.Map) map[string]string {
+	result := make(map[string]string)
+	attrs.Range(func(k string, v pcommon.Value) bool {
+		result[k] = v.AsString()
+		return true
+	})
+	return result
+}
+
+// extractK8sSummaryFromLogs extracts Kubernetes-specific summary from logs
+func (e *logsExporter) extractK8sSummaryFromLogs(ld plog.Logs) map[string]interface{} {
+	k8sSummary := map[string]interface{}{
+		"nodes":       []string{},
+		"pods":        []string{},
+		"namespaces":  []string{},
+		"deployments": []string{},
+		"services":    []string{},
+	}
+
+	// Use maps as sets to deduplicate
+	nodes := make(map[string]bool)
+	pods := make(map[string]bool)
+	namespaces := make(map[string]bool)
+	deployments := make(map[string]bool)
+	services := make(map[string]bool)
+
+	resourceLogs := ld.ResourceLogs()
+	for i := 0; i < resourceLogs.Len(); i++ {
+		rl := resourceLogs.At(i)
+		attrs := rl.Resource().Attributes()
+
+		// Extract Kubernetes resource names
+		if nodeName, exists := attrs.Get("k8s.node.name"); exists {
+			nodes[nodeName.AsString()] = true
+		}
+		if podName, exists := attrs.Get("k8s.pod.name"); exists {
+			pods[podName.AsString()] = true
+		}
+		if namespace, exists := attrs.Get("k8s.namespace.name"); exists {
+			namespaces[namespace.AsString()] = true
+		}
+		if deployment, exists := attrs.Get("k8s.deployment.name"); exists {
+			deployments[deployment.AsString()] = true
+		}
+		if service, exists := attrs.Get("k8s.service.name"); exists {
+			services[service.AsString()] = true
+		}
+	}
+
+	// Convert maps to slices
+	for node := range nodes {
+		k8sSummary["nodes"] = append(k8sSummary["nodes"].([]string), node)
+	}
+	for pod := range pods {
+		k8sSummary["pods"] = append(k8sSummary["pods"].([]string), pod)
+	}
+	for namespace := range namespaces {
+		k8sSummary["namespaces"] = append(k8sSummary["namespaces"].([]string), namespace)
+	}
+	for deployment := range deployments {
+		k8sSummary["deployments"] = append(k8sSummary["deployments"].([]string), deployment)
+	}
+	for service := range services {
+		k8sSummary["services"] = append(k8sSummary["services"].([]string), service)
+	}
+
+	return k8sSummary
+}
+
+// ========================= METRICS EXTRACTION FUNCTIONS =========================
 
 // extractActualMetrics extracts complete metric data including names, values, and timestamps
 func (e *metricsExporter) extractActualMetrics(md pmetric.Metrics) []map[string]interface{} {
@@ -145,7 +595,7 @@ func (e *metricsExporter) extractActualMetrics(md pmetric.Metrics) []map[string]
 	for i := 0; i < resourceMetrics.Len(); i++ {
 		rm := resourceMetrics.At(i)
 		
-		// Extract resource attributes (pod name, namespace, etc.) - FIXED function signature
+		// Extract resource attributes (pod name, namespace, etc.)
 		resourceAttrs := make(map[string]string)
 		rm.Resource().Attributes().Range(func(k string, v pcommon.Value) bool {
 			resourceAttrs[k] = v.AsString()
@@ -337,7 +787,7 @@ func (e *metricsExporter) extractNumberValue(point pmetric.NumberDataPoint) inte
 	}
 }
 
-// extractAttributes converts OTEL attributes to a string map - FIXED to use pcommon.Map
+// extractAttributes converts OTEL attributes to a string map
 func (e *metricsExporter) extractAttributes(attrs pcommon.Map) map[string]string {
 	result := make(map[string]string)
 	attrs.Range(func(k string, v pcommon.Value) bool {
@@ -347,8 +797,8 @@ func (e *metricsExporter) extractAttributes(attrs pcommon.Map) map[string]string
 	return result
 }
 
-// extractK8sSummary extracts Kubernetes-specific summary information
-func (e *metricsExporter) extractK8sSummary(md pmetric.Metrics) map[string]interface{} {
+// extractK8sSummaryFromMetrics extracts Kubernetes-specific summary information from metrics
+func (e *metricsExporter) extractK8sSummaryFromMetrics(md pmetric.Metrics) map[string]interface{} {
 	k8sSummary := map[string]interface{}{
 		"nodes":       []string{},
 		"pods":        []string{},
@@ -369,7 +819,7 @@ func (e *metricsExporter) extractK8sSummary(md pmetric.Metrics) map[string]inter
 		rm := resourceMetrics.At(i)
 		attrs := rm.Resource().Attributes()
 
-		// Extract Kubernetes resource names - FIXED to use proper API
+		// Extract Kubernetes resource names
 		if nodeName, exists := attrs.Get("k8s.node.name"); exists {
 			nodes[nodeName.AsString()] = true
 		}

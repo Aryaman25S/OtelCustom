@@ -5,10 +5,12 @@ import json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 
-class FullMetricsDebugHandler(BaseHTTPRequestHandler):
+class FullTelemetryDebugHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path.startswith('/custom-metrics'):
-            self.handle_custom_exporter()
+            self.handle_custom_metrics()
+        elif self.path.startswith('/custom-logs'):
+            self.handle_custom_logs()
         elif self.path.startswith('/v1/metrics'):
             self.handle_otlp_metrics()
         elif self.path.startswith('/v1/logs'):
@@ -16,26 +18,42 @@ class FullMetricsDebugHandler(BaseHTTPRequestHandler):
         else:
             self.handle_unknown()
 
-    def handle_custom_exporter(self):
-        print(f"\n=== ENHANCED CUSTOM GO EXPORTER at {datetime.now()} ===")
+    def handle_custom_metrics(self):
+        print(f"\n=== 📊 CUSTOM METRICS EXPORTER at {datetime.now()} ===")
         print(f"Method: {self.command}")
         print(f"Path: {self.path}")
         print(f"Headers:")
         for header, value in self.headers.items():
-            print(f"  {header}: {value}")
+            # Mask authorization tokens for security
+            if header.lower() == 'authorization':
+                print(f"  {header}: {value[:20]}***")
+            else:
+                print(f"  {header}: {value}")
         
         content_length = int(self.headers.get('Content-Length', 0))
         raw_body = self.rfile.read(content_length)
         
+        # Handle compression
+        data_to_parse = self.handle_compression(raw_body)
+        
         try:
-            data = json.loads(raw_body.decode('utf-8'))
-            print(f"\nENHANCED CUSTOM EXPORTER DATA:")
+            data = json.loads(data_to_parse.decode('utf-8'))
+            print(f"\n📊 METRICS DATA:")
             print(f"  Source: {data.get('source', 'unknown')}")
+            print(f"  Type: {data.get('type', 'unknown')}")
             print(f"  Timestamp: {datetime.fromtimestamp(data.get('timestamp', 0))}")
             print(f"  Metric Count: {data.get('metric_count', 0)}")
             print(f"  Resource Count: {data.get('resource_count', 0)}")
-            print(f"  Payload Size: {len(raw_body)} bytes")
+            print(f"  Original Payload Size: {len(raw_body)} bytes")
+            print(f"  Decompressed Size: {len(data_to_parse)} bytes")
             print(f"  Custom Field: {data.get('custom_field', 'N/A')}")
+            print(f"  Encoding: {data.get('encoding', 'N/A')}")
+            print(f"  Compression: {data.get('compression', 'N/A')}")
+            
+            # Show compression ratio if compressed
+            if len(raw_body) != len(data_to_parse):
+                ratio = len(raw_body) / len(data_to_parse)
+                print(f"  Compression Ratio: {ratio:.2f} ({ratio*100:.1f}% of original size)")
             
             k8s_data = data.get('kubernetes_summary', {})
             print(f"  Kubernetes Summary:")
@@ -46,120 +64,219 @@ class FullMetricsDebugHandler(BaseHTTPRequestHandler):
             print(f"    Services: {len(k8s_data.get('services', []))} services")
             
             actual_metrics = data.get('actual_metrics', [])
-            print(f"\nALL ACTUAL METRICS DATA ({len(actual_metrics)} total):")
+            print(f"\n📈 SAMPLE METRICS ({len(actual_metrics)} total):")
             print("=" * 80)
             
-            for i, metric in enumerate(actual_metrics):
-                print(f"\nMetric {i+1}:")
-                print(f"    Name: {metric.get('name', 'N/A')}")
-                print(f"    Type: {metric.get('type', 'N/A')}")
-                print(f"    Unit: '{metric.get('unit', '')}'" + (" (no unit)" if not metric.get('unit') else ""))
-                print(f"    Description: {metric.get('description', 'N/A')}")
-                
-                resource = metric.get('resource', {})
-                if 'k8s.pod.name' in resource:
-                    print(f"    Pod: {resource.get('k8s.pod.name')}")
-                    print(f"    Namespace: {resource.get('k8s.namespace.name', 'N/A')}")
-                    print(f"    Node: {resource.get('k8s.node.name', 'N/A')}")
-                elif 'k8s.node.name' in resource:
-                    print(f"    Node: {resource.get('k8s.node.name')}")
-                elif 'k8s.deployment.name' in resource:
-                    print(f"    Deployment: {resource.get('k8s.deployment.name')}")
-                    print(f"    Namespace: {resource.get('k8s.namespace.name', 'N/A')}")
-                else:
-                    resource_info = [f"{k}: {v}" for k, v in resource.items() if k.startswith('k8s.')]
-                    if resource_info:
-                        print(f"    Resource: {', '.join(resource_info[:3])}")
-                
-                scope = metric.get('scope', {})
-                if scope.get('name'):
-                    print(f"    Scope: {scope.get('name', '')} v{scope.get('version', 'unknown')}")
+            # Show first 5 metrics as examples
+            for i, metric in enumerate(actual_metrics[:5]):
+                print(f"\nMetric {i+1}: {metric.get('name', 'N/A')}")
+                print(f"  Type: {metric.get('type', 'N/A')}")
+                print(f"  Unit: '{metric.get('unit', '')}'" + (" (no unit)" if not metric.get('unit') else ""))
                 
                 data_points = metric.get('data_points', [])
-                print(f"    Data Points: {len(data_points)}")
-                
-                for j, point in enumerate(data_points):
-                    print(f"      Point {j+1}:")
+                if data_points:
+                    point = data_points[0]
                     value = point.get('value', 'N/A')
                     if isinstance(value, (int, float)):
-                        if metric.get('unit'):
-                            print(f"        VALUE: {value} {metric.get('unit')}")
-                        else:
-                            print(f"        VALUE: {value}")
-                    else:
-                        print(f"        VALUE: {value}")
+                        print(f"  Current Value: {value} {metric.get('unit', '')}")
                     
-                    if 'timestamp' in point:
-                        ts = point['timestamp']
-                        if ts and ts > 0:
-                            if ts > 1e15:
-                                ts /= 1e9
-                            print(f"        Timestamp: {datetime.fromtimestamp(ts)}")
-                    
-                    if 'start_timestamp' in point:
-                        start_ts = point['start_timestamp']
-                        if start_ts and start_ts > 0:
-                            if start_ts > 1e15:
-                                start_ts /= 1e9
-                            print(f"        Start Time: {datetime.fromtimestamp(start_ts)}")
-                    
-                    if 'is_monotonic' in point:
-                        print(f"        Monotonic: {point['is_monotonic']}")
-                    if 'aggregation_temporality' in point:
-                        print(f"        Temporality: {point['aggregation_temporality']}")
-                    
-                    attributes = point.get('attributes', {})
-                    if attributes:
-                        print(f"        Attributes: {attributes}")
-                    
-                    if 'count' in point:
-                        print(f"        Count: {point['count']}")
-                    if 'sum' in point:
-                        print(f"        Sum: {point['sum']}")
-                    if 'bucket_counts' in point:
-                        print(f"        Bucket Counts: {point['bucket_counts']}")
-                    if 'quantiles' in point:
-                        print(f"        Quantiles: {point['quantiles']}")
-                
-                if i < len(actual_metrics) - 1:
-                    print("-" * 60)
-            
-            print("\n" + "=" * 80)
-            
-            metric_types = {}
-            metric_names = {}
-            for metric in actual_metrics:
-                metric_type = metric.get('type', 'Unknown')
-                metric_types[metric_type] = metric_types.get(metric_type, 0) + 1
-                
-                name = metric.get('name', 'Unknown')
-                metric_names[name] = metric_names.get(name, 0) + 1
-            
-            print(f"\nFINAL STATISTICS:")
-            print(f"METRIC TYPE BREAKDOWN:")
-            for metric_type, count in sorted(metric_types.items()):
-                print(f"    {metric_type}: {count} metrics")
-            
-            print(f"\nALL METRIC NAMES AND FREQUENCIES:")
-            sorted_names = sorted(metric_names.items(), key=lambda x: x[1], reverse=True)
-            for name, count in sorted_names:
-                print(f"    {name}: {count} instances")
+                    resource = metric.get('resource', {})
+                    if 'k8s.pod.name' in resource:
+                        print(f"  Pod: {resource.get('k8s.pod.name')}")
+                    elif 'k8s.node.name' in resource:
+                        print(f"  Node: {resource.get('k8s.node.name')}")
+                        
+            if len(actual_metrics) > 5:
+                print(f"\n... and {len(actual_metrics) - 5} more metrics")
             
         except Exception as e:
-            print(f"Error parsing enhanced custom exporter data: {e}")
-            print(f"Raw body size: {len(raw_body)} bytes")
-            if len(raw_body) < 1000:
-                print(f"Raw body: {raw_body}")
-            else:
-                print(f"Raw body (first 500 chars): {raw_body[:500]}...")
+            print(f"Error parsing metrics data: {e}")
         
-        print("\n=== END ENHANCED CUSTOM EXPORTER ===\n")
+        print("\n=== END METRICS ===\n")
         
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
-        response = {"status": "success", "source": "full_metrics_handler", "metrics_processed": len(actual_metrics)}
+        response = {"status": "success", "source": "metrics_handler"}
         self.wfile.write(json.dumps(response).encode())
+
+    def handle_custom_logs(self):
+        print(f"\n=== 📝 CUSTOM LOGS EXPORTER at {datetime.now()} ===")
+        print(f"Method: {self.command}")
+        print(f"Path: {self.path}")
+        print(f"Headers:")
+        for header, value in self.headers.items():
+            # Mask authorization tokens for security
+            if header.lower() == 'authorization':
+                print(f"  {header}: {value[:20]}***")
+            else:
+                print(f"  {header}: {value}")
+        
+        content_length = int(self.headers.get('Content-Length', 0))
+        raw_body = self.rfile.read(content_length)
+        
+        # Handle compression
+        data_to_parse = self.handle_compression(raw_body)
+        
+        try:
+            data = json.loads(data_to_parse.decode('utf-8'))
+            print(f"\n📝 LOGS DATA:")
+            print(f"  Source: {data.get('source', 'unknown')}")
+            print(f"  Type: {data.get('type', 'unknown')}")
+            print(f"  Timestamp: {datetime.fromtimestamp(data.get('timestamp', 0))}")
+            print(f"  Log Count: {data.get('log_count', 0)}")
+            print(f"  Resource Count: {data.get('resource_count', 0)}")
+            print(f"  Original Payload Size: {len(raw_body)} bytes")
+            print(f"  Decompressed Size: {len(data_to_parse)} bytes")
+            print(f"  Custom Field: {data.get('custom_field', 'N/A')}")
+            print(f"  Encoding: {data.get('encoding', 'N/A')}")
+            print(f"  Compression: {data.get('compression', 'N/A')}")
+            
+            # Show compression ratio if compressed
+            if len(raw_body) != len(data_to_parse):
+                ratio = len(raw_body) / len(data_to_parse)
+                print(f"  Compression Ratio: {ratio:.2f} ({ratio*100:.1f}% of original size)")
+            
+            k8s_data = data.get('kubernetes_summary', {})
+            print(f"  Kubernetes Summary:")
+            print(f"    Nodes: {k8s_data.get('nodes', [])}")
+            print(f"    Namespaces: {k8s_data.get('namespaces', [])}")
+            print(f"    Pods: {len(k8s_data.get('pods', []))} pods")
+            print(f"    Deployments: {len(k8s_data.get('deployments', []))} deployments")
+            print(f"    Services: {len(k8s_data.get('services', []))} services")
+            
+            actual_logs = data.get('actual_logs', [])
+            print(f"\n📋 ALL KUBERNETES LOGS ({len(actual_logs)} total):")
+            print("=" * 100)
+            
+            # Group logs by severity
+            log_levels = {}
+            for log in actual_logs:
+                severity = log.get('severity_text', 'UNKNOWN')
+                if severity not in log_levels:
+                    log_levels[severity] = []
+                log_levels[severity].append(log)
+            
+            print(f"\n📊 LOG LEVEL BREAKDOWN:")
+            for level, logs in sorted(log_levels.items()):
+                print(f"  {level}: {len(logs)} logs")
+            
+            print(f"\n📋 RECENT LOG ENTRIES:")
+            print("-" * 100)
+            
+            for i, log in enumerate(actual_logs):
+                # Convert timestamp
+                timestamp = log.get('timestamp', 0)
+                if timestamp and timestamp > 0:
+                    if timestamp > 1e15:  # nanoseconds
+                        timestamp /= 1e9
+                    log_time = datetime.fromtimestamp(timestamp)
+                else:
+                    log_time = "Unknown time"
+                
+                # Extract log details
+                severity = log.get('severity_text', 'INFO')
+                body = log.get('body', 'No message')
+                resource = log.get('resource', {})
+                
+                # Format resource info
+                resource_info = []
+                if 'k8s.pod.name' in resource:
+                    resource_info.append(f"Pod: {resource['k8s.pod.name']}")
+                if 'k8s.namespace.name' in resource:
+                    resource_info.append(f"NS: {resource['k8s.namespace.name']}")
+                if 'k8s.node.name' in resource:
+                    resource_info.append(f"Node: {resource['k8s.node.name']}")
+                
+                resource_str = " | ".join(resource_info) if resource_info else "Unknown resource"
+                
+                print(f"\nLog {i+1}: [{severity}] {log_time}")
+                print(f"  Resource: {resource_str}")
+                print(f"  Message: {body}")
+                
+                # Show attributes if present
+                attributes = log.get('attributes', {})
+                if attributes:
+                    attr_str = ", ".join([f"{k}:{v}" for k, v in attributes.items() if k.startswith('k8s.')])
+                    if attr_str:
+                        print(f"  K8s Attributes: {attr_str}")
+                
+                # Show trace information if present
+                trace_id = log.get('trace_id', '')
+                span_id = log.get('span_id', '')
+                if trace_id and trace_id != '00000000000000000000000000000000':
+                    print(f"  Trace ID: {trace_id}")
+                if span_id and span_id != '0000000000000000':
+                    print(f"  Span ID: {span_id}")
+                
+                print("-" * 100)
+                
+                # Limit to first 10 logs for readability
+                if i >= 9:
+                    remaining = len(actual_logs) - 10
+                    if remaining > 0:
+                        print(f"\n... and {remaining} more log entries")
+                    break
+            
+            print(f"\n📈 LOG STATISTICS:")
+            severity_counts = {}
+            namespaces = set()
+            pods = set()
+            
+            for log in actual_logs:
+                severity = log.get('severity_text', 'UNKNOWN')
+                severity_counts[severity] = severity_counts.get(severity, 0) + 1
+                
+                resource = log.get('resource', {})
+                if 'k8s.namespace.name' in resource:
+                    namespaces.add(resource['k8s.namespace.name'])
+                if 'k8s.pod.name' in resource:
+                    pods.add(resource['k8s.pod.name'])
+            
+            print(f"  Severity Distribution: {severity_counts}")
+            print(f"  Unique Namespaces: {len(namespaces)} ({list(namespaces)})")
+            print(f"  Unique Pods: {len(pods)}")
+            
+        except Exception as e:
+            print(f"Error parsing logs data: {e}")
+            print(f"Raw body size: {len(raw_body)} bytes")
+            if len(raw_body) < 1000:
+                print(f"Raw body: {raw_body}")
+        
+        print("\n=== END LOGS ===\n")
+        
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        response = {"status": "success", "source": "logs_handler", "logs_processed": len(actual_logs) if 'actual_logs' in locals() else 0}
+        self.wfile.write(json.dumps(response).encode())
+
+    def handle_compression(self, raw_body):
+        """Handle different compression types and return decompressed data"""
+        content_encoding = self.headers.get('Content-Encoding', '').lower()
+        
+        if content_encoding == 'gzip' or (len(raw_body) >= 2 and raw_body[0] == 0x1f and raw_body[1] == 0x8b):
+            print(f"  🗜️ Data is GZIP compressed - decompressing...")
+            try:
+                decompressed = gzip.decompress(raw_body)
+                print(f"  ✅ Successfully decompressed {len(raw_body)} -> {len(decompressed)} bytes")
+                return decompressed
+            except Exception as e:
+                print(f"  ❌ Failed to decompress gzip data: {e}")
+                return raw_body
+        elif content_encoding == 'deflate':
+            print(f"  🗜️ Data is DEFLATE compressed - decompressing...")
+            try:
+                import zlib
+                decompressed = zlib.decompress(raw_body)
+                print(f"  ✅ Successfully decompressed {len(raw_body)} -> {len(decompressed)} bytes")
+                return decompressed
+            except Exception as e:
+                print(f"  ❌ Failed to decompress deflate data: {e}")
+                return raw_body
+        else:
+            print(f"  📄 Data is not compressed (Content-Encoding: {content_encoding or 'none'})")
+            return raw_body
 
     def handle_otlp_metrics(self):
         print(f"\n=== OTLP HTTP METRICS at {datetime.now()} ===")
@@ -171,17 +288,8 @@ class FullMetricsDebugHandler(BaseHTTPRequestHandler):
         
         print(f"Body size: {len(raw_body)} bytes")
         
-        if self.headers.get('Content-Encoding') == 'gzip' or (len(raw_body) >= 2 and raw_body[0] == 0x1f and raw_body[1] == 0x8b):
-            print("Data is GZIPPED - decompressing...")
-            try:
-                body = gzip.decompress(raw_body)
-                print(f"Decompressed size: {len(body)} bytes")
-            except Exception as e:
-                print(f"Failed to decompress: {e}")
-                body = raw_body
-        else:
-            print("Data is NOT compressed")
-            body = raw_body
+        # Handle compression
+        body = self.handle_compression(raw_body)
         
         try:
             text_content = body.decode('utf-8')
@@ -240,13 +348,16 @@ class FullMetricsDebugHandler(BaseHTTPRequestHandler):
 
 def main():
     port = 8080
-    server = HTTPServer(('', port), FullMetricsDebugHandler)
-    print(f"FULL METRICS Debug Server v3.0 listening on port {port}")
-    print(f"OTLP HTTP Endpoint: /v1/metrics (raw OpenTelemetry data)")
-    print(f"Custom Exporter Endpoint: /custom-metrics (ALL 162 metrics shown!)")
-    print(f"OTLP Logs Endpoint: /v1/logs")
-    print("WARNING: Will show ALL metrics - output will be very long!")
-    print("TIP: Pipe to a file if needed: python3 debug_server_new.py > metrics.log 2>&1\n")
+    server = HTTPServer(('', port), FullTelemetryDebugHandler)
+    print(f"📊📝 FULL TELEMETRY Debug Server v4.1 listening on port {port}")
+    print(f"📊 Custom Metrics Endpoint: /custom-metrics")
+    print(f"📝 Custom Logs Endpoint: /custom-logs") 
+    print(f"🔗 OTLP HTTP Metrics: /v1/metrics")
+    print(f"🔗 OTLP Logs: /v1/logs")
+    print("✨ Now handling BOTH metrics AND logs from your custom exporter!")
+    print("🎯 Will show Kubernetes events, pod logs, and all telemetry data")
+    print("🗜️ GZIP/DEFLATE compression support enabled")
+    print("🔑 Custom headers support with masked authorization tokens\n")
     
     try:
         server.serve_forever()

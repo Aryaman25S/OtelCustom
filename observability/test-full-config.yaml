@@ -4,20 +4,14 @@ data:
     exporters:
       debug:
         verbosity: detailed
-      otlphttp/custom:
-        endpoint: http://host.docker.internal:8080/v1/metrics
-        headers:
-          Authorization: Bearer rand-token-here
-        encoding: json
-        compression: none
       custom:
         endpoint: "http://localhost:8080"
         enabled: true
         custom_field: "k8s-logs-and-metrics"
         headers:
-          Authorization: Bearer another-rand-token-here
-          X-API-Key: custom-api-key-12345
-          X-Environment: kubernetes-production
+          Authorization: Bearer test-token-123
+          X-API-Key: test-key
+          X-Environment: kubernetes-test
         encoding: json
         compression: gzip
         
@@ -93,7 +87,6 @@ data:
         metrics:
           exporters:
           - debug
-          # - otlphttp/custom
           - custom  # Custom exporter for metrics
           processors:
           - k8sattributes
@@ -104,21 +97,11 @@ data:
           - otlp
         logs:
           exporters:
-          # - debug
-          # - otlphttp/custom
-          - custom  # Add custom exporter for logs
+          - custom  # Custom exporter for logs
           processors:
           - k8sattributes
           receivers:
           - k8s_events
-        # traces:
-        #   exporters:
-        #   - debug
-        #   - otlphttp/custom
-        #   processors:
-        #   - k8sattributes
-        #   receivers:
-        #   - otlp
       telemetry:
         metrics:
           readers:
