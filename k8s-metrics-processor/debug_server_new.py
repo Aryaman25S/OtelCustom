@@ -11,6 +11,8 @@ class FullTelemetryDebugHandler(BaseHTTPRequestHandler):
             self.handle_custom_metrics()
         elif self.path.startswith('/custom-logs'):
             self.handle_custom_logs()
+        elif self.path.startswith('/custom-traces'):
+            self.handle_custom_traces()
         elif self.path.startswith('/v1/metrics'):
             self.handle_otlp_metrics()
         elif self.path.startswith('/v1/logs'):
@@ -251,6 +253,188 @@ class FullTelemetryDebugHandler(BaseHTTPRequestHandler):
         response = {"status": "success", "source": "logs_handler", "logs_processed": len(actual_logs) if 'actual_logs' in locals() else 0}
         self.wfile.write(json.dumps(response).encode())
 
+    def handle_custom_traces(self):
+        print(f"\n=== 🔗 CUSTOM TRACES EXPORTER at {datetime.now()} ===")
+        print(f"Method: {self.command}")
+        print(f"Path: {self.path}")
+        print(f"Headers:")
+        for header, value in self.headers.items():
+            # Mask authorization tokens for security
+            if header.lower() == 'authorization':
+                print(f"  {header}: {value[:20]}***")
+            else:
+                print(f"  {header}: {value}")
+        
+        content_length = int(self.headers.get('Content-Length', 0))
+        raw_body = self.rfile.read(content_length)
+        
+        # Handle compression
+        data_to_parse = self.handle_compression(raw_body)
+        
+        try:
+            data = json.loads(data_to_parse.decode('utf-8'))
+            print(f"\n🔗 TRACES DATA:")
+            print(f"  Source: {data.get('source', 'unknown')}")
+            print(f"  Type: {data.get('type', 'unknown')}")
+            print(f"  Timestamp: {datetime.fromtimestamp(data.get('timestamp', 0))}")
+            print(f"  Span Count: {data.get('span_count', 0)}")
+            print(f"  Resource Count: {data.get('resource_count', 0)}")
+            print(f"  Original Payload Size: {len(raw_body)} bytes")
+            print(f"  Decompressed Size: {len(data_to_parse)} bytes")
+            print(f"  Custom Field: {data.get('custom_field', 'N/A')}")
+            print(f"  Encoding: {data.get('encoding', 'N/A')}")
+            print(f"  Compression: {data.get('compression', 'N/A')}")
+            
+            # Show compression ratio if compressed
+            if len(raw_body) != len(data_to_parse):
+                ratio = len(raw_body) / len(data_to_parse)
+                print(f"  Compression Ratio: {ratio:.2f} ({ratio*100:.1f}% of original size)")
+            
+            k8s_data = data.get('kubernetes_summary', {})
+            print(f"  Kubernetes Summary:")
+            print(f"    Nodes: {k8s_data.get('nodes', [])}")
+            print(f"    Namespaces: {k8s_data.get('namespaces', [])}")
+            print(f"    Pods: {len(k8s_data.get('pods', []))} pods")
+            print(f"    Deployments: {len(k8s_data.get('deployments', []))} deployments")
+            print(f"    Services: {len(k8s_data.get('services', []))} services")
+            
+            actual_traces = data.get('actual_traces', [])
+            print(f"\n🔗 ALL DISTRIBUTED TRACES ({len(actual_traces)} spans total):")
+            print("=" * 100)
+            
+            # Group traces by trace ID
+            trace_groups = {}
+            for span in actual_traces:
+                trace_id = span.get('trace_id', 'unknown')
+                if trace_id not in trace_groups:
+                    trace_groups[trace_id] = []
+                trace_groups[trace_id].append(span)
+            
+            print(f"\n📊 TRACE SUMMARY:")
+            print(f"  Total Unique Traces: {len(trace_groups)}")
+            print(f"  Total Spans: {len(actual_traces)}")
+            print(f"  Average Spans per Trace: {len(actual_traces) / len(trace_groups) if trace_groups else 0:.1f}")
+            
+            # Show trace breakdown by service
+            services = {}
+            for span in actual_traces:
+                service_name = span.get('resource', {}).get('service.name', 'unknown-service')
+                if service_name not in services:
+                    services[service_name] = 0
+                services[service_name] += 1
+            
+            print(f"  Services: {len(services)}")
+            for service, count in sorted(services.items()):
+                print(f"    {service}: {count} spans")
+            
+            print(f"\n🔗 SAMPLE TRACES:")
+            print("-" * 100)
+            
+            # Show first few complete traces
+            traces_shown = 0
+            for trace_id, spans in list(trace_groups.items())[:3]:  # Show first 3 traces
+                traces_shown += 1
+                print(f"\nTrace {traces_shown}: {trace_id}")
+                print(f"  Spans: {len(spans)}")
+                
+                # Sort spans by start time
+                sorted_spans = sorted(spans, key=lambda s: s.get('start_time', 0))
+                
+                for i, span in enumerate(sorted_spans):
+                    # Calculate duration
+                    duration_ns = span.get('duration_ns', 0)
+                    duration_ms = duration_ns / 1_000_000 if duration_ns else 0
+                    
+                    # Extract key attributes
+                    resource = span.get('resource', {})
+                    attributes = span.get('attributes', {})
+                    
+                    # Format span info
+                    service_name = resource.get('service.name', 'unknown-service')
+                    operation_name = span.get('name', 'unknown-operation')
+                    status = span.get('status_code', 'UNSET')
+                    
+                    # Show indentation for child spans
+                    indent = "    " if span.get('parent_span_id', '0000000000000000') != '0000000000000000' else "  "
+                    
+                    print(f"{indent}Span {i+1}: {operation_name}")
+                    print(f"{indent}  Service: {service_name}")
+                    print(f"{indent}  Kind: {span.get('kind', 'INTERNAL')}")
+                    print(f"{indent}  Duration: {duration_ms:.2f}ms")
+                    print(f"{indent}  Status: {status}")
+                    
+                    if span.get('status_message'):
+                        print(f"{indent}  Message: {span.get('status_message')}")
+                    
+                    # Show key attributes
+                    key_attrs = {k: v for k, v in attributes.items() 
+                               if k in ['http.method', 'http.url', 'http.status_code', 'db.statement', 'error']}
+                    if key_attrs:
+                        attr_str = ", ".join([f"{k}={v}" for k, v in key_attrs.items()])
+                        print(f"{indent}  Attributes: {attr_str}")
+                    
+                    # Show events if any
+                    events = span.get('events', [])
+                    if events:
+                        print(f"{indent}  Events: {len(events)} events")
+                        for event in events[:2]:  # Show first 2 events
+                            print(f"{indent}    - {event.get('name', 'unnamed-event')}")
+                
+                print("-" * 100)
+            
+            if len(trace_groups) > 3:
+                remaining = len(trace_groups) - 3
+                print(f"\n... and {remaining} more traces")
+            
+            print(f"\n📈 TRACE STATISTICS:")
+            
+            # Status distribution
+            status_counts = {}
+            error_count = 0
+            total_duration = 0
+            
+            for span in actual_traces:
+                status = span.get('status_code', 'UNSET')
+                status_counts[status] = status_counts.get(status, 0) + 1
+                
+                if status == 'ERROR':
+                    error_count += 1
+                
+                duration = span.get('duration_ns', 0)
+                total_duration += duration
+            
+            print(f"  Status Distribution: {status_counts}")
+            print(f"  Error Rate: {(error_count / len(actual_traces) * 100):.1f}%" if actual_traces else "0%")
+            print(f"  Average Span Duration: {(total_duration / len(actual_traces) / 1_000_000):.2f}ms" if actual_traces else "0ms")
+            
+            # Unique namespaces and pods from traces
+            namespaces = set()
+            pods = set()
+            
+            for span in actual_traces:
+                resource = span.get('resource', {})
+                if 'k8s.namespace.name' in resource:
+                    namespaces.add(resource['k8s.namespace.name'])
+                if 'k8s.pod.name' in resource:
+                    pods.add(resource['k8s.pod.name'])
+            
+            print(f"  Unique Namespaces: {len(namespaces)} ({list(namespaces)})")
+            print(f"  Unique Pods: {len(pods)}")
+            
+        except Exception as e:
+            print(f"Error parsing traces data: {e}")
+            print(f"Raw body size: {len(raw_body)} bytes")
+            if len(raw_body) < 1000:
+                print(f"Raw body: {raw_body}")
+        
+        print("\n=== END TRACES ===\n")
+        
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        response = {"status": "success", "source": "traces_handler", "spans_processed": len(actual_traces) if 'actual_traces' in locals() else 0}
+        self.wfile.write(json.dumps(response).encode())
+
     def handle_compression(self, raw_body):
         """Handle different compression types and return decompressed data"""
         content_encoding = self.headers.get('Content-Encoding', '').lower()
@@ -349,13 +533,14 @@ class FullTelemetryDebugHandler(BaseHTTPRequestHandler):
 def main():
     port = 8080
     server = HTTPServer(('', port), FullTelemetryDebugHandler)
-    print(f"📊📝 FULL TELEMETRY Debug Server v4.1 listening on port {port}")
+    print(f"📊📝🔗 FULL TELEMETRY Debug Server v5.0 listening on port {port}")
     print(f"📊 Custom Metrics Endpoint: /custom-metrics")
     print(f"📝 Custom Logs Endpoint: /custom-logs") 
+    print(f"🔗 Custom Traces Endpoint: /custom-traces")
     print(f"🔗 OTLP HTTP Metrics: /v1/metrics")
     print(f"🔗 OTLP Logs: /v1/logs")
-    print("✨ Now handling BOTH metrics AND logs from your custom exporter!")
-    print("🎯 Will show Kubernetes events, pod logs, and all telemetry data")
+    print("✨ Now handling ALL telemetry: metrics, logs, AND traces!")
+    print("🎯 Will show Kubernetes events, pod logs, distributed traces, and all telemetry data")
     print("🗜️ GZIP/DEFLATE compression support enabled")
     print("🔑 Custom headers support with masked authorization tokens\n")
     

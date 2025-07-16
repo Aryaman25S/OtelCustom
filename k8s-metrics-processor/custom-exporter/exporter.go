@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.uber.org/zap"
 )
 
@@ -26,6 +27,13 @@ type metricsExporter struct {
 
 // logsExporter implements the logs exporter interfaces
 type logsExporter struct {
+	config     *Config
+	logger     *zap.Logger
+	httpClient *http.Client
+}
+
+// tracesExporter implements the traces exporter interfaces
+type tracesExporter struct {
 	config     *Config
 	logger     *zap.Logger
 	httpClient *http.Client
@@ -546,6 +554,368 @@ func (e *logsExporter) extractK8sSummaryFromLogs(ld plog.Logs) map[string]interf
 	for i := 0; i < resourceLogs.Len(); i++ {
 		rl := resourceLogs.At(i)
 		attrs := rl.Resource().Attributes()
+
+		// Extract Kubernetes resource names
+		if nodeName, exists := attrs.Get("k8s.node.name"); exists {
+			nodes[nodeName.AsString()] = true
+		}
+		if podName, exists := attrs.Get("k8s.pod.name"); exists {
+			pods[podName.AsString()] = true
+		}
+		if namespace, exists := attrs.Get("k8s.namespace.name"); exists {
+			namespaces[namespace.AsString()] = true
+		}
+		if deployment, exists := attrs.Get("k8s.deployment.name"); exists {
+			deployments[deployment.AsString()] = true
+		}
+		if service, exists := attrs.Get("k8s.service.name"); exists {
+			services[service.AsString()] = true
+		}
+	}
+
+	// Convert maps to slices
+	for node := range nodes {
+		k8sSummary["nodes"] = append(k8sSummary["nodes"].([]string), node)
+	}
+	for pod := range pods {
+		k8sSummary["pods"] = append(k8sSummary["pods"].([]string), pod)
+	}
+	for namespace := range namespaces {
+		k8sSummary["namespaces"] = append(k8sSummary["namespaces"].([]string), namespace)
+	}
+	for deployment := range deployments {
+		k8sSummary["deployments"] = append(k8sSummary["deployments"].([]string), deployment)
+	}
+	for service := range services {
+		k8sSummary["services"] = append(k8sSummary["services"].([]string), service)
+	}
+
+	return k8sSummary
+}
+
+// ========================= TRACES EXPORTER =========================
+
+// Start implements component.Component for traces
+func (e *tracesExporter) Start(ctx context.Context, host component.Host) error {
+	e.httpClient = &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	
+	e.logger.Info("Custom traces exporter started",
+		zap.String("endpoint", e.config.Endpoint),
+		zap.Bool("enabled", e.config.Enabled),
+		zap.String("encoding", e.getEncoding()),
+		zap.String("compression", e.getCompression()),
+		zap.Int("header_count", len(e.config.Headers)))
+	return nil
+}
+
+// Shutdown implements component.Component for traces
+func (e *tracesExporter) Shutdown(ctx context.Context) error {
+	e.logger.Info("Custom traces exporter shutdown")
+	return nil
+}
+
+// Capabilities implements the consumer interface for traces
+func (e *tracesExporter) Capabilities() consumer.Capabilities {
+	return consumer.Capabilities{MutatesData: false}
+}
+
+// ConsumeTraces implements the traces consumer interface
+func (e *tracesExporter) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {
+	if !e.config.Enabled {
+		e.logger.Debug("Custom exporter disabled, skipping traces")
+		return nil
+	}
+
+	// Count the traces for logging
+	spanCount := 0
+	resourceSpans := td.ResourceSpans()
+	for i := 0; i < resourceSpans.Len(); i++ {
+		rs := resourceSpans.At(i)
+		scopeSpans := rs.ScopeSpans()
+		for j := 0; j < scopeSpans.Len(); j++ {
+			ss := scopeSpans.At(j)
+			spanCount += ss.Spans().Len()
+		}
+	}
+
+	e.logger.Info("Custom exporter processing traces",
+		zap.Int("span_count", spanCount),
+		zap.Int("resource_count", resourceSpans.Len()),
+		zap.String("endpoint", e.config.Endpoint),
+	)
+
+	// Export the actual trace data
+	err := e.exportTracesToCustomEndpoint(ctx, td, spanCount, resourceSpans.Len())
+	if err != nil {
+		e.logger.Error("Failed to export traces", zap.Error(err))
+		return err
+	}
+
+	e.logger.Info("Successfully exported traces with actual data to custom endpoint")
+	return nil
+}
+
+// exportTracesToCustomEndpoint sends comprehensive traces data to your Python server
+func (e *tracesExporter) exportTracesToCustomEndpoint(ctx context.Context, td ptrace.Traces, spanCount, resourceCount int) error {
+	// Create comprehensive traces payload
+	payload := map[string]interface{}{
+		"type":               "traces",
+		"timestamp":          time.Now().Unix(),
+		"source":             "custom-go-exporter",
+		"span_count":         spanCount,
+		"resource_count":     resourceCount,
+		"endpoint":           e.config.Endpoint,
+		"custom_field":       e.config.CustomField,
+		"encoding":           e.getEncoding(),
+		"compression":        e.getCompression(),
+		"kubernetes_summary": e.extractK8sSummaryFromTraces(td),
+		"actual_traces":      e.extractActualTraces(td),
+	}
+
+	return e.sendToEndpointTraces(ctx, payload, "/custom-traces")
+}
+
+// sendToEndpointTraces sends data to the Python server (traces version)
+func (e *tracesExporter) sendToEndpointTraces(ctx context.Context, payload map[string]interface{}, path string) error {
+	// Convert to JSON (encoding support can be extended later)
+	var data []byte
+	var err error
+	
+	switch e.getEncoding() {
+	case "json":
+		data, err = json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("failed to marshal traces payload as JSON: %w", err)
+		}
+	default:
+		// Default to JSON
+		data, err = json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("failed to marshal traces payload: %w", err)
+		}
+	}
+
+	// Apply compression if configured
+	var requestBody []byte
+	contentEncoding := ""
+	
+	switch e.getCompression() {
+	case "gzip":
+		var buf bytes.Buffer
+		gzipWriter := gzip.NewWriter(&buf)
+		if _, err := gzipWriter.Write(data); err != nil {
+			return fmt.Errorf("failed to gzip traces payload: %w", err)
+		}
+		if err := gzipWriter.Close(); err != nil {
+			return fmt.Errorf("failed to close gzip writer: %w", err)
+		}
+		requestBody = buf.Bytes()
+		contentEncoding = "gzip"
+		
+		e.logger.Debug("Applied gzip compression to traces",
+			zap.Int("original_size", len(data)),
+			zap.Int("compressed_size", len(requestBody)),
+			zap.Float64("compression_ratio", float64(len(requestBody))/float64(len(data))))
+			
+	case "none", "":
+		requestBody = data
+	default:
+		e.logger.Warn("Unsupported compression type, using no compression",
+			zap.String("compression", e.config.Compression))
+		requestBody = data
+	}
+
+	// Log payload info
+	e.logger.Debug("Sending traces payload",
+		zap.Int("payload_size_bytes", len(requestBody)),
+		zap.String("path", path),
+		zap.String("encoding", e.getEncoding()),
+		zap.String("compression", contentEncoding))
+
+	// Send to Python server
+	url := "http://host.docker.internal:8080" + path
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(requestBody))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set standard headers
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "CustomGoExporter/2.1")
+	req.Header.Set("X-Custom-Source", "kubernetes-collector")
+	req.Header.Set("X-Span-Count", fmt.Sprintf("%d", len(payload)))
+	
+	// Set compression header if applied
+	if contentEncoding != "" {
+		req.Header.Set("Content-Encoding", contentEncoding)
+	}
+	
+	// Apply custom headers from configuration
+	for key, value := range e.config.Headers {
+		req.Header.Set(key, value)
+		e.logger.Debug("Applied custom header to traces", zap.String("header", key), zap.String("value", value))
+	}
+
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("server returned status %d", resp.StatusCode)
+	}
+
+	e.logger.Debug("Successfully sent traces to custom endpoint",
+		zap.String("url", url),
+		zap.Int("status_code", resp.StatusCode),
+		zap.Int("payload_size", len(requestBody)),
+		zap.String("content_encoding", contentEncoding))
+
+	return nil
+}
+
+// getEncoding returns the configured encoding or default (traces version)
+func (e *tracesExporter) getEncoding() string {
+	if e.config.Encoding == "" {
+		return "json"
+	}
+	return e.config.Encoding
+}
+
+// getCompression returns the configured compression or default (traces version)
+func (e *tracesExporter) getCompression() string {
+	if e.config.Compression == "" {
+		return "none"
+	}
+	return e.config.Compression
+}
+
+// ========================= TRACES EXTRACTION FUNCTIONS =========================
+
+// extractActualTraces extracts complete trace data including spans, timing, and attributes
+func (e *tracesExporter) extractActualTraces(td ptrace.Traces) []map[string]interface{} {
+	var actualTraces []map[string]interface{}
+
+	resourceSpans := td.ResourceSpans()
+	for i := 0; i < resourceSpans.Len(); i++ {
+		rs := resourceSpans.At(i)
+		
+		// Extract resource attributes (pod name, namespace, etc.)
+		resourceAttrs := make(map[string]string)
+		rs.Resource().Attributes().Range(func(k string, v pcommon.Value) bool {
+			resourceAttrs[k] = v.AsString()
+			return true
+		})
+
+		scopeSpans := rs.ScopeSpans()
+		for j := 0; j < scopeSpans.Len(); j++ {
+			ss := scopeSpans.At(j)
+			
+			// Get scope information
+			scope := ss.Scope()
+			scopeInfo := map[string]string{
+				"name":    scope.Name(),
+				"version": scope.Version(),
+			}
+
+			spans := ss.Spans()
+			for k := 0; k < spans.Len(); k++ {
+				span := spans.At(k)
+				
+				// Extract span events
+				events := make([]map[string]interface{}, span.Events().Len())
+				for l := 0; l < span.Events().Len(); l++ {
+					event := span.Events().At(l)
+					eventAttrs := make(map[string]string)
+					event.Attributes().Range(func(k string, v pcommon.Value) bool {
+						eventAttrs[k] = v.AsString()
+						return true
+					})
+					
+					events[l] = map[string]interface{}{
+						"name":       event.Name(),
+						"timestamp":  event.Timestamp(),
+						"attributes": eventAttrs,
+					}
+				}
+				
+				// Extract span links
+				links := make([]map[string]interface{}, span.Links().Len())
+				for l := 0; l < span.Links().Len(); l++ {
+					link := span.Links().At(l)
+					linkAttrs := make(map[string]string)
+					link.Attributes().Range(func(k string, v pcommon.Value) bool {
+						linkAttrs[k] = v.AsString()
+						return true
+					})
+					
+					links[l] = map[string]interface{}{
+						"trace_id":   link.TraceID().String(),
+						"span_id":    link.SpanID().String(),
+						"attributes": linkAttrs,
+					}
+				}
+				
+				spanData := map[string]interface{}{
+					"trace_id":           span.TraceID().String(),
+					"span_id":            span.SpanID().String(),
+					"parent_span_id":     span.ParentSpanID().String(),
+					"name":               span.Name(),
+					"kind":               span.Kind().String(),
+					"start_time":         span.StartTimestamp(),
+					"end_time":           span.EndTimestamp(),
+					"duration_ns":        span.EndTimestamp() - span.StartTimestamp(),
+					"status_code":        span.Status().Code().String(),
+					"status_message":     span.Status().Message(),
+					"resource":           resourceAttrs,
+					"scope":              scopeInfo,
+					"attributes":         e.extractAttributesTraces(span.Attributes()),
+					"events":             events,
+					"links":              links,
+				}
+				
+				actualTraces = append(actualTraces, spanData)
+			}
+		}
+	}
+
+	return actualTraces
+}
+
+// extractAttributesTraces converts OTEL attributes to a string map (traces version)
+func (e *tracesExporter) extractAttributesTraces(attrs pcommon.Map) map[string]string {
+	result := make(map[string]string)
+	attrs.Range(func(k string, v pcommon.Value) bool {
+		result[k] = v.AsString()
+		return true
+	})
+	return result
+}
+
+// extractK8sSummaryFromTraces extracts Kubernetes-specific summary from traces
+func (e *tracesExporter) extractK8sSummaryFromTraces(td ptrace.Traces) map[string]interface{} {
+	k8sSummary := map[string]interface{}{
+		"nodes":       []string{},
+		"pods":        []string{},
+		"namespaces":  []string{},
+		"deployments": []string{},
+		"services":    []string{},
+	}
+
+	// Use maps as sets to deduplicate
+	nodes := make(map[string]bool)
+	pods := make(map[string]bool)
+	namespaces := make(map[string]bool)
+	deployments := make(map[string]bool)
+	services := make(map[string]bool)
+
+	resourceSpans := td.ResourceSpans()
+	for i := 0; i < resourceSpans.Len(); i++ {
+		rs := resourceSpans.At(i)
+		attrs := rs.Resource().Attributes()
 
 		// Extract Kubernetes resource names
 		if nodeName, exists := attrs.Get("k8s.node.name"); exists {

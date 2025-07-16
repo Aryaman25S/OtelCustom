@@ -7,7 +7,7 @@ data:
       custom:
         endpoint: "http://localhost:8080"
         enabled: true
-        custom_field: "k8s-logs-and-metrics"
+        custom_field: "k8s-full-observability"
         headers:
           Authorization: Bearer test-token-123
           X-API-Key: test-key
@@ -77,9 +77,10 @@ data:
         - node
       otlp:
         protocols:
-          grpc: null
-          http: null
-          
+          grpc: 
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
     service:
       extensions:
       - health_check
@@ -102,6 +103,15 @@ data:
           - k8sattributes
           receivers:
           - k8s_events
+        traces:
+          exporters:
+          - debug
+          - custom  # Custom exporter for traces
+          processors:
+          - k8sattributes
+          - batch
+          receivers:
+          - otlp
       telemetry:
         metrics:
           readers:
