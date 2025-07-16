@@ -117,7 +117,7 @@ func (e *metricsExporter) exportMetricsToCustomEndpoint(ctx context.Context, md 
 		"encoding":           e.getEncoding(),
 		"compression":        e.getCompression(),
 		"kubernetes_summary": e.extractK8sSummaryFromMetrics(md),
-		"actual_metrics":     e.extractActualMetrics(md),
+		"resource_metrics":   e.extractResourceMetrics(md),
 	}
 
 	return e.sendToEndpoint(ctx, payload, "/custom-metrics")
@@ -317,7 +317,7 @@ func (e *logsExporter) exportLogsToCustomEndpoint(ctx context.Context, ld plog.L
 		"encoding":           e.getEncoding(),
 		"compression":        e.getCompression(),
 		"kubernetes_summary": e.extractK8sSummaryFromLogs(ld),
-		"actual_logs":        e.extractActualLogs(ld),
+		"resource_logs":      e.extractResourceLogs(ld),
 	}
 
 	return e.sendToEndpointLogs(ctx, payload, "/custom-logs")
@@ -439,160 +439,6 @@ func (e *logsExporter) getCompression() string {
 	return e.config.Compression
 }
 
-// ========================= LOGS EXTRACTION FUNCTIONS =========================
-
-// extractActualLogs extracts complete log data including content, severity, and timestamps
-func (e *logsExporter) extractActualLogs(ld plog.Logs) []map[string]interface{} {
-	var actualLogs []map[string]interface{}
-
-	resourceLogs := ld.ResourceLogs()
-	for i := 0; i < resourceLogs.Len(); i++ {
-		rl := resourceLogs.At(i)
-		
-		// Extract resource attributes (pod name, namespace, etc.)
-		resourceAttrs := make(map[string]string)
-		rl.Resource().Attributes().Range(func(k string, v pcommon.Value) bool {
-			resourceAttrs[k] = v.AsString()
-			return true
-		})
-
-		scopeLogs := rl.ScopeLogs()
-		for j := 0; j < scopeLogs.Len(); j++ {
-			sl := scopeLogs.At(j)
-			
-			// Get scope information
-			scope := sl.Scope()
-			scopeInfo := map[string]string{
-				"name":    scope.Name(),
-				"version": scope.Version(),
-			}
-
-			logRecords := sl.LogRecords()
-			for k := 0; k < logRecords.Len(); k++ {
-				logRecord := logRecords.At(k)
-				
-				logData := map[string]interface{}{
-					"timestamp":          logRecord.Timestamp(),
-					"observed_timestamp": logRecord.ObservedTimestamp(),
-					"severity_text":      logRecord.SeverityText(),
-					"severity_number":    logRecord.SeverityNumber(),
-					"body":               e.extractLogBody(logRecord.Body()),
-					"resource":           resourceAttrs,
-					"scope":              scopeInfo,
-					"attributes":         e.extractAttributesLogs(logRecord.Attributes()),
-					"trace_id":           logRecord.TraceID().String(),
-					"span_id":            logRecord.SpanID().String(),
-					"flags":              logRecord.Flags(),
-				}
-				
-				actualLogs = append(actualLogs, logData)
-			}
-		}
-	}
-
-	return actualLogs
-}
-
-// extractLogBody extracts the log message body (FIXED API methods)
-func (e *logsExporter) extractLogBody(body pcommon.Value) interface{} {
-	switch body.Type() {
-	case pcommon.ValueTypeStr:
-		return body.AsString()
-	case pcommon.ValueTypeInt:
-		return body.Int() // FIXED: was IntValue()
-	case pcommon.ValueTypeDouble:
-		return body.Double() // FIXED: was DoubleValue()
-	case pcommon.ValueTypeBool:
-		return body.Bool() // FIXED: was BoolValue()
-	case pcommon.ValueTypeMap:
-		result := make(map[string]interface{})
-		body.Map().Range(func(k string, v pcommon.Value) bool { // FIXED: was MapValue()
-			result[k] = e.extractLogBody(v)
-			return true
-		})
-		return result
-	case pcommon.ValueTypeSlice:
-		slice := body.Slice() // FIXED: was SliceValue()
-		result := make([]interface{}, slice.Len())
-		for i := 0; i < slice.Len(); i++ {
-			result[i] = e.extractLogBody(slice.At(i))
-		}
-		return result
-	default:
-		return body.AsString()
-	}
-}
-
-// extractAttributesLogs converts OTEL attributes to a string map (logs version)
-func (e *logsExporter) extractAttributesLogs(attrs pcommon.Map) map[string]string {
-	result := make(map[string]string)
-	attrs.Range(func(k string, v pcommon.Value) bool {
-		result[k] = v.AsString()
-		return true
-	})
-	return result
-}
-
-// extractK8sSummaryFromLogs extracts Kubernetes-specific summary from logs
-func (e *logsExporter) extractK8sSummaryFromLogs(ld plog.Logs) map[string]interface{} {
-	k8sSummary := map[string]interface{}{
-		"nodes":       []string{},
-		"pods":        []string{},
-		"namespaces":  []string{},
-		"deployments": []string{},
-		"services":    []string{},
-	}
-
-	// Use maps as sets to deduplicate
-	nodes := make(map[string]bool)
-	pods := make(map[string]bool)
-	namespaces := make(map[string]bool)
-	deployments := make(map[string]bool)
-	services := make(map[string]bool)
-
-	resourceLogs := ld.ResourceLogs()
-	for i := 0; i < resourceLogs.Len(); i++ {
-		rl := resourceLogs.At(i)
-		attrs := rl.Resource().Attributes()
-
-		// Extract Kubernetes resource names
-		if nodeName, exists := attrs.Get("k8s.node.name"); exists {
-			nodes[nodeName.AsString()] = true
-		}
-		if podName, exists := attrs.Get("k8s.pod.name"); exists {
-			pods[podName.AsString()] = true
-		}
-		if namespace, exists := attrs.Get("k8s.namespace.name"); exists {
-			namespaces[namespace.AsString()] = true
-		}
-		if deployment, exists := attrs.Get("k8s.deployment.name"); exists {
-			deployments[deployment.AsString()] = true
-		}
-		if service, exists := attrs.Get("k8s.service.name"); exists {
-			services[service.AsString()] = true
-		}
-	}
-
-	// Convert maps to slices
-	for node := range nodes {
-		k8sSummary["nodes"] = append(k8sSummary["nodes"].([]string), node)
-	}
-	for pod := range pods {
-		k8sSummary["pods"] = append(k8sSummary["pods"].([]string), pod)
-	}
-	for namespace := range namespaces {
-		k8sSummary["namespaces"] = append(k8sSummary["namespaces"].([]string), namespace)
-	}
-	for deployment := range deployments {
-		k8sSummary["deployments"] = append(k8sSummary["deployments"].([]string), deployment)
-	}
-	for service := range services {
-		k8sSummary["services"] = append(k8sSummary["services"].([]string), service)
-	}
-
-	return k8sSummary
-}
-
 // ========================= TRACES EXPORTER =========================
 
 // Start implements component.Component for traces
@@ -671,7 +517,7 @@ func (e *tracesExporter) exportTracesToCustomEndpoint(ctx context.Context, td pt
 		"encoding":           e.getEncoding(),
 		"compression":        e.getCompression(),
 		"kubernetes_summary": e.extractK8sSummaryFromTraces(td),
-		"actual_traces":      e.extractActualTraces(td),
+		"resource_traces":    e.extractResourceTraces(td),
 	}
 
 	return e.sendToEndpointTraces(ctx, payload, "/custom-traces")
@@ -795,104 +641,121 @@ func (e *tracesExporter) getCompression() string {
 
 // ========================= TRACES EXTRACTION FUNCTIONS =========================
 
-// extractActualTraces extracts complete trace data including spans, timing, and attributes
-func (e *tracesExporter) extractActualTraces(td ptrace.Traces) []map[string]interface{} {
-	var actualTraces []map[string]interface{}
+// extractResourceTraces extracts traces in OTLP-like hierarchical structure
+func (e *tracesExporter) extractResourceTraces(td ptrace.Traces) []map[string]interface{} {
+	var resourceTraces []map[string]interface{}
 
-	resourceSpans := td.ResourceSpans()
-	for i := 0; i < resourceSpans.Len(); i++ {
-		rs := resourceSpans.At(i)
+	resourceSpansData := td.ResourceSpans()
+	for i := 0; i < resourceSpansData.Len(); i++ {
+		rs := resourceSpansData.At(i)
 		
-		// Extract resource attributes (pod name, namespace, etc.)
-		resourceAttrs := make(map[string]string)
+		// Extract and flatten resource attributes
+		resourceAttrs := make(map[string]interface{})
 		rs.Resource().Attributes().Range(func(k string, v pcommon.Value) bool {
 			resourceAttrs[k] = v.AsString()
 			return true
 		})
 
-		scopeSpans := rs.ScopeSpans()
-		for j := 0; j < scopeSpans.Len(); j++ {
-			ss := scopeSpans.At(j)
+		// Extract scope spans
+		var scopeSpans []map[string]interface{}
+		scopeSpansData := rs.ScopeSpans()
+		for j := 0; j < scopeSpansData.Len(); j++ {
+			ss := scopeSpansData.At(j)
 			
 			// Get scope information
 			scope := ss.Scope()
-			scopeInfo := map[string]string{
+			scopeInfo := map[string]interface{}{
 				"name":    scope.Name(),
 				"version": scope.Version(),
 			}
 
-			spans := ss.Spans()
-			for k := 0; k < spans.Len(); k++ {
-				span := spans.At(k)
+			// Extract spans for this scope
+			var spans []map[string]interface{}
+			spansData := ss.Spans()
+			for k := 0; k < spansData.Len(); k++ {
+				span := spansData.At(k)
 				
-				// Extract span events
+				// Flatten span attributes
+				attributes := make(map[string]interface{})
+				span.Attributes().Range(func(key string, val pcommon.Value) bool {
+					attributes[key] = val.AsString()
+					return true
+				})
+				
+				// Extract events
 				events := make([]map[string]interface{}, span.Events().Len())
 				for l := 0; l < span.Events().Len(); l++ {
 					event := span.Events().At(l)
-					eventAttrs := make(map[string]string)
+					eventAttrs := make(map[string]interface{})
 					event.Attributes().Range(func(k string, v pcommon.Value) bool {
 						eventAttrs[k] = v.AsString()
 						return true
 					})
 					
 					events[l] = map[string]interface{}{
-						"name":       event.Name(),
-						"timestamp":  event.Timestamp(),
-						"attributes": eventAttrs,
+						"name":              event.Name(),
+						"timeUnixNano":      event.Timestamp(),
+						"attributes":        eventAttrs,
+						"droppedAttributesCount": event.DroppedAttributesCount(),
 					}
 				}
 				
-				// Extract span links
+				// Extract links
 				links := make([]map[string]interface{}, span.Links().Len())
 				for l := 0; l < span.Links().Len(); l++ {
 					link := span.Links().At(l)
-					linkAttrs := make(map[string]string)
+					linkAttrs := make(map[string]interface{})
 					link.Attributes().Range(func(k string, v pcommon.Value) bool {
 						linkAttrs[k] = v.AsString()
 						return true
 					})
 					
 					links[l] = map[string]interface{}{
-						"trace_id":   link.TraceID().String(),
-						"span_id":    link.SpanID().String(),
+						"traceId":    link.TraceID().String(),
+						"spanId":     link.SpanID().String(),
 						"attributes": linkAttrs,
+						"droppedAttributesCount": link.DroppedAttributesCount(),
 					}
 				}
 				
-				spanData := map[string]interface{}{
-					"trace_id":           span.TraceID().String(),
-					"span_id":            span.SpanID().String(),
-					"parent_span_id":     span.ParentSpanID().String(),
-					"name":               span.Name(),
-					"kind":               span.Kind().String(),
-					"start_time":         span.StartTimestamp(),
-					"end_time":           span.EndTimestamp(),
-					"duration_ns":        span.EndTimestamp() - span.StartTimestamp(),
-					"status_code":        span.Status().Code().String(),
-					"status_message":     span.Status().Message(),
-					"resource":           resourceAttrs,
-					"scope":              scopeInfo,
-					"attributes":         e.extractAttributesTraces(span.Attributes()),
-					"events":             events,
-					"links":              links,
+				spanInfo := map[string]interface{}{
+					"traceId":           span.TraceID().String(),
+					"spanId":            span.SpanID().String(),
+					"parentSpanId":      span.ParentSpanID().String(),
+					"name":              span.Name(),
+					"kind":              span.Kind().String(),
+					"startTimeUnixNano": span.StartTimestamp(),
+					"endTimeUnixNano":   span.EndTimestamp(),
+					"attributes":        attributes,
+					"events":            events,
+					"links":             links,
+					"status": map[string]interface{}{
+						"code":    span.Status().Code().String(),
+						"message": span.Status().Message(),
+					},
+					"droppedAttributesCount": span.DroppedAttributesCount(),
+					"droppedEventsCount":     span.DroppedEventsCount(),
+					"droppedLinksCount":      span.DroppedLinksCount(),
 				}
 				
-				actualTraces = append(actualTraces, spanData)
+				spans = append(spans, spanInfo)
 			}
+
+			scopeSpan := map[string]interface{}{
+				"scope": scopeInfo,
+				"spans": spans,
+			}
+			scopeSpans = append(scopeSpans, scopeSpan)
 		}
+
+		resourceTrace := map[string]interface{}{
+			"attributes": resourceAttrs,
+			"scopeSpans": scopeSpans,
+		}
+		resourceTraces = append(resourceTraces, resourceTrace)
 	}
 
-	return actualTraces
-}
-
-// extractAttributesTraces converts OTEL attributes to a string map (traces version)
-func (e *tracesExporter) extractAttributesTraces(attrs pcommon.Map) map[string]string {
-	result := make(map[string]string)
-	attrs.Range(func(k string, v pcommon.Value) bool {
-		result[k] = v.AsString()
-		return true
-	})
-	return result
+	return resourceTraces
 }
 
 // extractK8sSummaryFromTraces extracts Kubernetes-specific summary from traces
@@ -955,126 +818,335 @@ func (e *tracesExporter) extractK8sSummaryFromTraces(td ptrace.Traces) map[strin
 	return k8sSummary
 }
 
+// ========================= LOGS EXTRACTION FUNCTIONS =========================
+
+// extractResourceLogs extracts logs in OTLP-like hierarchical structure
+func (e *logsExporter) extractResourceLogs(ld plog.Logs) []map[string]interface{} {
+	var resourceLogs []map[string]interface{}
+
+	resourceLogsData := ld.ResourceLogs()
+	for i := 0; i < resourceLogsData.Len(); i++ {
+		rl := resourceLogsData.At(i)
+		
+		// Extract and flatten resource attributes
+		resourceAttrs := make(map[string]interface{})
+		rl.Resource().Attributes().Range(func(k string, v pcommon.Value) bool {
+			resourceAttrs[k] = v.AsString()
+			return true
+		})
+
+		// Extract scope logs
+		var scopeLogs []map[string]interface{}
+		scopeLogsData := rl.ScopeLogs()
+		for j := 0; j < scopeLogsData.Len(); j++ {
+			sl := scopeLogsData.At(j)
+			
+			// Get scope information
+			scope := sl.Scope()
+			scopeInfo := map[string]interface{}{
+				"name":    scope.Name(),
+				"version": scope.Version(),
+			}
+
+			// Extract log records for this scope
+			var logRecords []map[string]interface{}
+			logRecordsData := sl.LogRecords()
+			for k := 0; k < logRecordsData.Len(); k++ {
+				logRecord := logRecordsData.At(k)
+				
+				// Flatten log attributes
+				attributes := make(map[string]interface{})
+				logRecord.Attributes().Range(func(key string, val pcommon.Value) bool {
+					attributes[key] = val.AsString()
+					return true
+				})
+				
+				logInfo := map[string]interface{}{
+					"timeUnixNano":         logRecord.Timestamp(),
+					"observedTimeUnixNano": logRecord.ObservedTimestamp(),
+					"severityNumber":       logRecord.SeverityNumber(),
+					"severityText":         logRecord.SeverityText(),
+					"body":                 e.extractLogBody(logRecord.Body()),
+					"attributes":           attributes,
+					"traceId":              logRecord.TraceID().String(),
+					"spanId":               logRecord.SpanID().String(),
+					"flags":                logRecord.Flags(),
+				}
+				
+				logRecords = append(logRecords, logInfo)
+			}
+
+			scopeLog := map[string]interface{}{
+				"scope":      scopeInfo,
+				"logRecords": logRecords,
+			}
+			scopeLogs = append(scopeLogs, scopeLog)
+		}
+
+		resourceLog := map[string]interface{}{
+			"attributes": resourceAttrs,
+			"scopeLogs":  scopeLogs,
+		}
+		resourceLogs = append(resourceLogs, resourceLog)
+	}
+
+	return resourceLogs
+}
+
+// extractLogBody extracts the log message body (FIXED API methods)
+func (e *logsExporter) extractLogBody(body pcommon.Value) interface{} {
+	switch body.Type() {
+	case pcommon.ValueTypeStr:
+		return body.AsString()
+	case pcommon.ValueTypeInt:
+		return body.Int() // FIXED: was IntValue()
+	case pcommon.ValueTypeDouble:
+		return body.Double() // FIXED: was DoubleValue()
+	case pcommon.ValueTypeBool:
+		return body.Bool() // FIXED: was BoolValue()
+	case pcommon.ValueTypeMap:
+		result := make(map[string]interface{})
+		body.Map().Range(func(k string, v pcommon.Value) bool { // FIXED: was MapValue()
+			result[k] = e.extractLogBody(v)
+			return true
+		})
+		return result
+	case pcommon.ValueTypeSlice:
+		slice := body.Slice() // FIXED: was SliceValue()
+		result := make([]interface{}, slice.Len())
+		for i := 0; i < slice.Len(); i++ {
+			result[i] = e.extractLogBody(slice.At(i))
+		}
+		return result
+	default:
+		return body.AsString()
+	}
+}
+
+// extractK8sSummaryFromLogs extracts Kubernetes-specific summary from logs
+func (e *logsExporter) extractK8sSummaryFromLogs(ld plog.Logs) map[string]interface{} {
+	k8sSummary := map[string]interface{}{
+		"nodes":       []string{},
+		"pods":        []string{},
+		"namespaces":  []string{},
+		"deployments": []string{},
+		"services":    []string{},
+	}
+
+	// Use maps as sets to deduplicate
+	nodes := make(map[string]bool)
+	pods := make(map[string]bool)
+	namespaces := make(map[string]bool)
+	deployments := make(map[string]bool)
+	services := make(map[string]bool)
+
+	resourceLogs := ld.ResourceLogs()
+	for i := 0; i < resourceLogs.Len(); i++ {
+		rl := resourceLogs.At(i)
+		attrs := rl.Resource().Attributes()
+
+		// Extract Kubernetes resource names
+		if nodeName, exists := attrs.Get("k8s.node.name"); exists {
+			nodes[nodeName.AsString()] = true
+		}
+		if podName, exists := attrs.Get("k8s.pod.name"); exists {
+			pods[podName.AsString()] = true
+		}
+		if namespace, exists := attrs.Get("k8s.namespace.name"); exists {
+			namespaces[namespace.AsString()] = true
+		}
+		if deployment, exists := attrs.Get("k8s.deployment.name"); exists {
+			deployments[deployment.AsString()] = true
+		}
+		if service, exists := attrs.Get("k8s.service.name"); exists {
+			services[service.AsString()] = true
+		}
+	}
+
+	// Convert maps to slices
+	for node := range nodes {
+		k8sSummary["nodes"] = append(k8sSummary["nodes"].([]string), node)
+	}
+	for pod := range pods {
+		k8sSummary["pods"] = append(k8sSummary["pods"].([]string), pod)
+	}
+	for namespace := range namespaces {
+		k8sSummary["namespaces"] = append(k8sSummary["namespaces"].([]string), namespace)
+	}
+	for deployment := range deployments {
+		k8sSummary["deployments"] = append(k8sSummary["deployments"].([]string), deployment)
+	}
+	for service := range services {
+		k8sSummary["services"] = append(k8sSummary["services"].([]string), service)
+	}
+
+	return k8sSummary
+}
+
 // ========================= METRICS EXTRACTION FUNCTIONS =========================
 
-// extractActualMetrics extracts complete metric data including names, values, and timestamps
-func (e *metricsExporter) extractActualMetrics(md pmetric.Metrics) []map[string]interface{} {
-	var actualMetrics []map[string]interface{}
+// extractResourceMetrics extracts metrics in OTLP-like hierarchical structure
+func (e *metricsExporter) extractResourceMetrics(md pmetric.Metrics) []map[string]interface{} {
+	var resourceMetrics []map[string]interface{}
 
-	resourceMetrics := md.ResourceMetrics()
-	for i := 0; i < resourceMetrics.Len(); i++ {
-		rm := resourceMetrics.At(i)
+	resourceMetricsData := md.ResourceMetrics()
+	for i := 0; i < resourceMetricsData.Len(); i++ {
+		rm := resourceMetricsData.At(i)
 		
-		// Extract resource attributes (pod name, namespace, etc.)
-		resourceAttrs := make(map[string]string)
+		// Extract and flatten resource attributes
+		resourceAttrs := make(map[string]interface{})
 		rm.Resource().Attributes().Range(func(k string, v pcommon.Value) bool {
 			resourceAttrs[k] = v.AsString()
 			return true
 		})
 
-		scopeMetrics := rm.ScopeMetrics()
-		for j := 0; j < scopeMetrics.Len(); j++ {
-			sm := scopeMetrics.At(j)
+		// Extract scope metrics
+		var scopeMetrics []map[string]interface{}
+		scopeMetricsData := rm.ScopeMetrics()
+		for j := 0; j < scopeMetricsData.Len(); j++ {
+			sm := scopeMetricsData.At(j)
 			
 			// Get scope information
 			scope := sm.Scope()
-			scopeInfo := map[string]string{
+			scopeInfo := map[string]interface{}{
 				"name":    scope.Name(),
 				"version": scope.Version(),
 			}
 
-			metrics := sm.Metrics()
-			for k := 0; k < metrics.Len(); k++ {
-				metric := metrics.At(k)
+			// Extract metrics for this scope
+			var metrics []map[string]interface{}
+			metricsData := sm.Metrics()
+			for k := 0; k < metricsData.Len(); k++ {
+				metric := metricsData.At(k)
 				
-				metricData := map[string]interface{}{
+				metricInfo := map[string]interface{}{
 					"name":        metric.Name(),
 					"description": metric.Description(),
 					"unit":        metric.Unit(),
 					"type":        metric.Type().String(),
-					"resource":    resourceAttrs,
-					"scope":       scopeInfo,
-					"data_points": e.extractDataPoints(metric),
+				}
+
+				// Add the actual metric data based on type
+				switch metric.Type() {
+				case pmetric.MetricTypeGauge:
+					metricInfo["gauge"] = e.extractGaugeData(metric.Gauge())
+				case pmetric.MetricTypeSum:
+					metricInfo["sum"] = e.extractSumData(metric.Sum())
+				case pmetric.MetricTypeHistogram:
+					metricInfo["histogram"] = e.extractHistogramData(metric.Histogram())
+				case pmetric.MetricTypeSummary:
+					metricInfo["summary"] = e.extractSummaryData(metric.Summary())
 				}
 				
-				actualMetrics = append(actualMetrics, metricData)
+				metrics = append(metrics, metricInfo)
 			}
+
+			scopeMetric := map[string]interface{}{
+				"scope":   scopeInfo,
+				"metrics": metrics,
+			}
+			scopeMetrics = append(scopeMetrics, scopeMetric)
 		}
+
+		resourceMetric := map[string]interface{}{
+			"attributes":   resourceAttrs,
+			"scopeMetrics": scopeMetrics,
+		}
+		resourceMetrics = append(resourceMetrics, resourceMetric)
 	}
 
-	return actualMetrics
+	return resourceMetrics
 }
 
-// extractDataPoints extracts actual values from different metric types
-func (e *metricsExporter) extractDataPoints(metric pmetric.Metric) []map[string]interface{} {
-	var dataPoints []map[string]interface{}
-
-	switch metric.Type() {
-	case pmetric.MetricTypeGauge:
-		dataPoints = e.extractGaugeDataPoints(metric.Gauge())
-	case pmetric.MetricTypeSum:
-		dataPoints = e.extractSumDataPoints(metric.Sum())
-	case pmetric.MetricTypeHistogram:
-		dataPoints = e.extractHistogramDataPoints(metric.Histogram())
-	case pmetric.MetricTypeSummary:
-		dataPoints = e.extractSummaryDataPoints(metric.Summary())
-	default:
-		e.logger.Debug("Unknown metric type", zap.String("type", metric.Type().String()))
-	}
-
-	return dataPoints
-}
-
-// extractGaugeDataPoints extracts data from gauge metrics (current value)
-func (e *metricsExporter) extractGaugeDataPoints(gauge pmetric.Gauge) []map[string]interface{} {
+// extractGaugeData extracts gauge metric data in OTLP-like format
+func (e *metricsExporter) extractGaugeData(gauge pmetric.Gauge) map[string]interface{} {
 	var dataPoints []map[string]interface{}
 
 	points := gauge.DataPoints()
 	for i := 0; i < points.Len(); i++ {
 		point := points.At(i)
 		
+		// Flatten attributes
+		attributes := make(map[string]interface{})
+		point.Attributes().Range(func(k string, v pcommon.Value) bool {
+			attributes[k] = v.AsString()
+			return true
+		})
+		
 		dataPoint := map[string]interface{}{
-			"timestamp": point.Timestamp(),
-			"value":     e.extractNumberValue(point),
-			"attributes": e.extractAttributes(point.Attributes()),
+			"timeUnixNano": point.Timestamp(),
+			"attributes":   attributes,
+		}
+
+		// Add value based on type
+		switch point.ValueType() {
+		case pmetric.NumberDataPointValueTypeInt:
+			dataPoint["asInt"] = point.IntValue()
+		case pmetric.NumberDataPointValueTypeDouble:
+			dataPoint["asDouble"] = point.DoubleValue()
 		}
 		
 		dataPoints = append(dataPoints, dataPoint)
 	}
 
-	return dataPoints
+	return map[string]interface{}{
+		"dataPoints": dataPoints,
+	}
 }
 
-// extractSumDataPoints extracts data from sum metrics (cumulative or delta)
-func (e *metricsExporter) extractSumDataPoints(sum pmetric.Sum) []map[string]interface{} {
+// extractSumData extracts sum metric data in OTLP-like format
+func (e *metricsExporter) extractSumData(sum pmetric.Sum) map[string]interface{} {
 	var dataPoints []map[string]interface{}
 
 	points := sum.DataPoints()
 	for i := 0; i < points.Len(); i++ {
 		point := points.At(i)
 		
+		// Flatten attributes
+		attributes := make(map[string]interface{})
+		point.Attributes().Range(func(k string, v pcommon.Value) bool {
+			attributes[k] = v.AsString()
+			return true
+		})
+		
 		dataPoint := map[string]interface{}{
-			"timestamp":    point.Timestamp(),
-			"start_timestamp": point.StartTimestamp(),
-			"value":        e.extractNumberValue(point),
-			"attributes":   e.extractAttributes(point.Attributes()),
-			"is_monotonic": sum.IsMonotonic(),
-			"aggregation_temporality": sum.AggregationTemporality().String(),
+			"startTimeUnixNano": point.StartTimestamp(),
+			"timeUnixNano":      point.Timestamp(),
+			"attributes":        attributes,
+		}
+
+		// Add value based on type
+		switch point.ValueType() {
+		case pmetric.NumberDataPointValueTypeInt:
+			dataPoint["asInt"] = point.IntValue()
+		case pmetric.NumberDataPointValueTypeDouble:
+			dataPoint["asDouble"] = point.DoubleValue()
 		}
 		
 		dataPoints = append(dataPoints, dataPoint)
 	}
 
-	return dataPoints
+	return map[string]interface{}{
+		"dataPoints":              dataPoints,
+		"isMonotonic":            sum.IsMonotonic(),
+		"aggregationTemporality": sum.AggregationTemporality().String(),
+	}
 }
 
-// extractHistogramDataPoints extracts data from histogram metrics
-func (e *metricsExporter) extractHistogramDataPoints(histogram pmetric.Histogram) []map[string]interface{} {
+// extractHistogramData extracts histogram metric data in OTLP-like format
+func (e *metricsExporter) extractHistogramData(histogram pmetric.Histogram) map[string]interface{} {
 	var dataPoints []map[string]interface{}
 
 	points := histogram.DataPoints()
 	for i := 0; i < points.Len(); i++ {
 		point := points.At(i)
+		
+		// Flatten attributes
+		attributes := make(map[string]interface{})
+		point.Attributes().Range(func(k string, v pcommon.Value) bool {
+			attributes[k] = v.AsString()
+			return true
+		})
 		
 		// Extract bucket counts
 		bucketCounts := make([]uint64, point.BucketCounts().Len())
@@ -1089,13 +1161,13 @@ func (e *metricsExporter) extractHistogramDataPoints(histogram pmetric.Histogram
 		}
 		
 		dataPoint := map[string]interface{}{
-			"timestamp":       point.Timestamp(),
-			"start_timestamp": point.StartTimestamp(),
-			"count":           point.Count(),
-			"sum":             point.Sum(),
-			"bucket_counts":   bucketCounts,
-			"explicit_bounds": explicitBounds,
-			"attributes":      e.extractAttributes(point.Attributes()),
+			"startTimeUnixNano": point.StartTimestamp(),
+			"timeUnixNano":      point.Timestamp(),
+			"count":             point.Count(),
+			"sum":               point.Sum(),
+			"bucketCounts":      bucketCounts,
+			"explicitBounds":    explicitBounds,
+			"attributes":        attributes,
 		}
 		
 		// Add min/max if available
@@ -1109,62 +1181,52 @@ func (e *metricsExporter) extractHistogramDataPoints(histogram pmetric.Histogram
 		dataPoints = append(dataPoints, dataPoint)
 	}
 
-	return dataPoints
+	return map[string]interface{}{
+		"dataPoints":              dataPoints,
+		"aggregationTemporality": histogram.AggregationTemporality().String(),
+	}
 }
 
-// extractSummaryDataPoints extracts data from summary metrics
-func (e *metricsExporter) extractSummaryDataPoints(summary pmetric.Summary) []map[string]interface{} {
+// extractSummaryData extracts summary metric data in OTLP-like format
+func (e *metricsExporter) extractSummaryData(summary pmetric.Summary) map[string]interface{} {
 	var dataPoints []map[string]interface{}
 
 	points := summary.DataPoints()
 	for i := 0; i < points.Len(); i++ {
 		point := points.At(i)
 		
+		// Flatten attributes
+		attributes := make(map[string]interface{})
+		point.Attributes().Range(func(k string, v pcommon.Value) bool {
+			attributes[k] = v.AsString()
+			return true
+		})
+		
 		// Extract quantile values
-		quantiles := make([]map[string]interface{}, point.QuantileValues().Len())
+		var quantiles []map[string]interface{}
 		for j := 0; j < point.QuantileValues().Len(); j++ {
 			quantile := point.QuantileValues().At(j)
-			quantiles[j] = map[string]interface{}{
+			quantiles = append(quantiles, map[string]interface{}{
 				"quantile": quantile.Quantile(),
 				"value":    quantile.Value(),
-			}
+			})
 		}
 		
 		dataPoint := map[string]interface{}{
-			"timestamp":       point.Timestamp(),
-			"start_timestamp": point.StartTimestamp(),
-			"count":           point.Count(),
-			"sum":             point.Sum(),
-			"quantiles":       quantiles,
-			"attributes":      e.extractAttributes(point.Attributes()),
+			"startTimeUnixNano": point.StartTimestamp(),
+			"timeUnixNano":      point.Timestamp(),
+			"count":             point.Count(),
+			"sum":               point.Sum(),
+			"quantileValues":    quantiles,
+			"attributes":        attributes,
 		}
 		
 		dataPoints = append(dataPoints, dataPoint)
 	}
 
-	return dataPoints
-}
-
-// extractNumberValue extracts numeric value from a number data point
-func (e *metricsExporter) extractNumberValue(point pmetric.NumberDataPoint) interface{} {
-	switch point.ValueType() {
-	case pmetric.NumberDataPointValueTypeInt:
-		return point.IntValue()
-	case pmetric.NumberDataPointValueTypeDouble:
-		return point.DoubleValue()
-	default:
-		return nil
+	return map[string]interface{}{
+		"dataPoints": dataPoints,
 	}
-}
-
-// extractAttributes converts OTEL attributes to a string map
-func (e *metricsExporter) extractAttributes(attrs pcommon.Map) map[string]string {
-	result := make(map[string]string)
-	attrs.Range(func(k string, v pcommon.Value) bool {
-		result[k] = v.AsString()
-		return true
-	})
-	return result
 }
 
 // extractK8sSummaryFromMetrics extracts Kubernetes-specific summary information from metrics

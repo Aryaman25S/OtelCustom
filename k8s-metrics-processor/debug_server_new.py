@@ -65,31 +65,51 @@ class FullTelemetryDebugHandler(BaseHTTPRequestHandler):
             print(f"    Deployments: {len(k8s_data.get('deployments', []))} deployments")
             print(f"    Services: {len(k8s_data.get('services', []))} services")
             
-            actual_metrics = data.get('actual_metrics', [])
-            print(f"\n📈 SAMPLE METRICS ({len(actual_metrics)} total):")
+            actual_metrics = data.get('resource_metrics', [])
+            print(f"\n📈 RESOURCE METRICS ({len(actual_metrics)} resource groups):")
             print("=" * 80)
             
-            # Show first 5 metrics as examples
-            for i, metric in enumerate(actual_metrics[:5]):
-                print(f"\nMetric {i+1}: {metric.get('name', 'N/A')}")
-                print(f"  Type: {metric.get('type', 'N/A')}")
-                print(f"  Unit: '{metric.get('unit', '')}'" + (" (no unit)" if not metric.get('unit') else ""))
+            total_metrics = 0
+            # Show first few resource groups as examples
+            for i, resource_group in enumerate(actual_metrics[:3]):
+                attributes = resource_group.get('attributes', {})
+                scope_metrics = resource_group.get('scopeMetrics', [])
                 
-                data_points = metric.get('data_points', [])
-                if data_points:
-                    point = data_points[0]
-                    value = point.get('value', 'N/A')
-                    if isinstance(value, (int, float)):
-                        print(f"  Current Value: {value} {metric.get('unit', '')}")
+                print(f"\nResource Group {i+1}:")
+                # Show key resource attributes
+                if 'k8s.pod.name' in attributes:
+                    print(f"  Pod: {attributes.get('k8s.pod.name')}")
+                elif 'k8s.node.name' in attributes:
+                    print(f"  Node: {attributes.get('k8s.node.name')}")
+                elif 'k8s.namespace.name' in attributes:
+                    print(f"  Namespace: {attributes.get('k8s.namespace.name')}")
+                
+                print(f"  Scope Groups: {len(scope_metrics)}")
+                
+                # Count metrics in this resource group
+                resource_metric_count = 0
+                for scope_group in scope_metrics:
+                    metrics = scope_group.get('metrics', [])
+                    resource_metric_count += len(metrics)
                     
-                    resource = metric.get('resource', {})
-                    if 'k8s.pod.name' in resource:
-                        print(f"  Pod: {resource.get('k8s.pod.name')}")
-                    elif 'k8s.node.name' in resource:
-                        print(f"  Node: {resource.get('k8s.node.name')}")
-                        
-            if len(actual_metrics) > 5:
-                print(f"\n... and {len(actual_metrics) - 5} more metrics")
+                    # Show first few metrics from first scope
+                    if i == 0 and scope_group == scope_metrics[0]:
+                        print(f"  Sample Metrics from this resource:")
+                        for j, metric in enumerate(metrics[:3]):
+                            print(f"    • {metric.get('name', 'Unknown')} ({metric.get('type', 'Unknown')})")
+                            if j >= 2:
+                                remaining = len(metrics) - 3
+                                if remaining > 0:
+                                    print(f"    • ... and {remaining} more metrics")
+                                break
+                
+                print(f"  Total Metrics: {resource_metric_count}")
+                total_metrics += resource_metric_count
+                
+            if len(actual_metrics) > 3:
+                print(f"\n... and {len(actual_metrics) - 3} more resource groups")
+            
+            print(f"\n📊 SUMMARY: {total_metrics} total metrics across {len(actual_metrics)} resource groups")
             
         except Exception as e:
             print(f"Error parsing metrics data: {e}")
@@ -147,14 +167,30 @@ class FullTelemetryDebugHandler(BaseHTTPRequestHandler):
             print(f"    Deployments: {len(k8s_data.get('deployments', []))} deployments")
             print(f"    Services: {len(k8s_data.get('services', []))} services")
             
-            actual_logs = data.get('actual_logs', [])
-            print(f"\n📋 ALL KUBERNETES LOGS ({len(actual_logs)} total):")
+            actual_logs = data.get('resource_logs', [])
+            print(f"\n📋 RESOURCE LOGS ({len(actual_logs)} resource groups):")
             print("=" * 100)
+            
+            total_logs = 0
+            all_logs_flat = []
+            
+            # Flatten logs for analysis
+            for resource_group in actual_logs:
+                attributes = resource_group.get('attributes', {})
+                scope_logs = resource_group.get('scopeLogs', [])
+                
+                for scope_group in scope_logs:
+                    log_records = scope_group.get('logRecords', [])
+                    for log_record in log_records:
+                        # Add resource attributes to each log for easier processing
+                        log_record['resource_attributes'] = attributes
+                        all_logs_flat.append(log_record)
+                        total_logs += 1
             
             # Group logs by severity
             log_levels = {}
-            for log in actual_logs:
-                severity = log.get('severity_text', 'UNKNOWN')
+            for log in all_logs_flat:
+                severity = log.get('severityText', 'UNKNOWN')
                 if severity not in log_levels:
                     log_levels[severity] = []
                 log_levels[severity].append(log)
@@ -166,29 +202,31 @@ class FullTelemetryDebugHandler(BaseHTTPRequestHandler):
             print(f"\n📋 RECENT LOG ENTRIES:")
             print("-" * 100)
             
-            for i, log in enumerate(actual_logs):
+            for i, log in enumerate(all_logs_flat[:10]):  # Show first 10 logs
                 # Convert timestamp
-                timestamp = log.get('timestamp', 0)
+                timestamp = log.get('timeUnixNano', 0)
                 if timestamp and timestamp > 0:
                     if timestamp > 1e15:  # nanoseconds
-                        timestamp /= 1e9
-                    log_time = datetime.fromtimestamp(timestamp)
+                        timestamp_secs = timestamp / 1e9
+                    else:
+                        timestamp_secs = timestamp
+                    log_time = datetime.fromtimestamp(timestamp_secs)
                 else:
                     log_time = "Unknown time"
                 
                 # Extract log details
-                severity = log.get('severity_text', 'INFO')
+                severity = log.get('severityText', 'INFO')
                 body = log.get('body', 'No message')
-                resource = log.get('resource', {})
+                resource_attrs = log.get('resource_attributes', {})
                 
                 # Format resource info
                 resource_info = []
-                if 'k8s.pod.name' in resource:
-                    resource_info.append(f"Pod: {resource['k8s.pod.name']}")
-                if 'k8s.namespace.name' in resource:
-                    resource_info.append(f"NS: {resource['k8s.namespace.name']}")
-                if 'k8s.node.name' in resource:
-                    resource_info.append(f"Node: {resource['k8s.node.name']}")
+                if 'k8s.pod.name' in resource_attrs:
+                    resource_info.append(f"Pod: {resource_attrs['k8s.pod.name']}")
+                if 'k8s.namespace.name' in resource_attrs:
+                    resource_info.append(f"NS: {resource_attrs['k8s.namespace.name']}")
+                if 'k8s.node.name' in resource_attrs:
+                    resource_info.append(f"Node: {resource_attrs['k8s.node.name']}")
                 
                 resource_str = " | ".join(resource_info) if resource_info else "Unknown resource"
                 
@@ -199,13 +237,13 @@ class FullTelemetryDebugHandler(BaseHTTPRequestHandler):
                 # Show attributes if present
                 attributes = log.get('attributes', {})
                 if attributes:
-                    attr_str = ", ".join([f"{k}:{v}" for k, v in attributes.items() if k.startswith('k8s.')])
+                    attr_str = ", ".join([f"{k}:{v}" for k, v in attributes.items() if str(k).startswith('k8s.')])
                     if attr_str:
                         print(f"  K8s Attributes: {attr_str}")
                 
                 # Show trace information if present
-                trace_id = log.get('trace_id', '')
-                span_id = log.get('span_id', '')
+                trace_id = log.get('traceId', '')
+                span_id = log.get('spanId', '')
                 if trace_id and trace_id != '00000000000000000000000000000000':
                     print(f"  Trace ID: {trace_id}")
                 if span_id and span_id != '0000000000000000':
@@ -215,7 +253,7 @@ class FullTelemetryDebugHandler(BaseHTTPRequestHandler):
                 
                 # Limit to first 10 logs for readability
                 if i >= 9:
-                    remaining = len(actual_logs) - 10
+                    remaining = len(all_logs_flat) - 10
                     if remaining > 0:
                         print(f"\n... and {remaining} more log entries")
                     break
@@ -225,19 +263,21 @@ class FullTelemetryDebugHandler(BaseHTTPRequestHandler):
             namespaces = set()
             pods = set()
             
-            for log in actual_logs:
-                severity = log.get('severity_text', 'UNKNOWN')
+            for log in all_logs_flat:
+                severity = log.get('severityText', 'UNKNOWN')
                 severity_counts[severity] = severity_counts.get(severity, 0) + 1
                 
-                resource = log.get('resource', {})
-                if 'k8s.namespace.name' in resource:
-                    namespaces.add(resource['k8s.namespace.name'])
-                if 'k8s.pod.name' in resource:
-                    pods.add(resource['k8s.pod.name'])
+                resource_attrs = log.get('resource_attributes', {})
+                if 'k8s.namespace.name' in resource_attrs:
+                    namespaces.add(resource_attrs['k8s.namespace.name'])
+                if 'k8s.pod.name' in resource_attrs:
+                    pods.add(resource_attrs['k8s.pod.name'])
             
             print(f"  Severity Distribution: {severity_counts}")
             print(f"  Unique Namespaces: {len(namespaces)} ({list(namespaces)})")
             print(f"  Unique Pods: {len(pods)}")
+            print(f"  Total Resource Groups: {len(actual_logs)}")
+            print(f"  Total Log Records: {total_logs}")
             
         except Exception as e:
             print(f"Error parsing logs data: {e}")
@@ -250,7 +290,7 @@ class FullTelemetryDebugHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
-        response = {"status": "success", "source": "logs_handler", "logs_processed": len(actual_logs) if 'actual_logs' in locals() else 0}
+        response = {"status": "success", "source": "logs_handler", "logs_processed": total_logs if 'total_logs' in locals() else 0}
         self.wfile.write(json.dumps(response).encode())
 
     def handle_custom_traces(self):
@@ -298,33 +338,57 @@ class FullTelemetryDebugHandler(BaseHTTPRequestHandler):
             print(f"    Deployments: {len(k8s_data.get('deployments', []))} deployments")
             print(f"    Services: {len(k8s_data.get('services', []))} services")
             
-            actual_traces = data.get('actual_traces', [])
-            print(f"\n🔗 ALL DISTRIBUTED TRACES ({len(actual_traces)} spans total):")
+            actual_traces = data.get('resource_traces', [])
+            print(f"\n🔗 RESOURCE TRACES ({len(actual_traces)} resource groups):")
             print("=" * 100)
             
-            # Group traces by trace ID
+            total_spans = 0
+            all_spans_flat = []
+            
+            # Flatten spans for analysis
+            for resource_group in actual_traces:
+                attributes = resource_group.get('attributes', {})
+                scope_spans = resource_group.get('scopeSpans', [])
+                
+                for scope_group in scope_spans:
+                    spans = scope_group.get('spans', [])
+                    for span in spans:
+                        # Add resource attributes to each span for easier processing
+                        span['resource_attributes'] = attributes
+                        all_spans_flat.append(span)
+                        total_spans += 1
+            
+            # Group spans by trace ID
             trace_groups = {}
-            for span in actual_traces:
-                trace_id = span.get('trace_id', 'unknown')
+            services = {}
+            status_counts = {}
+            
+            for span in all_spans_flat:
+                # Group by trace ID
+                trace_id = span.get('traceId', 'unknown')
                 if trace_id not in trace_groups:
                     trace_groups[trace_id] = []
                 trace_groups[trace_id].append(span)
-            
-            print(f"\n📊 TRACE SUMMARY:")
-            print(f"  Total Unique Traces: {len(trace_groups)}")
-            print(f"  Total Spans: {len(actual_traces)}")
-            print(f"  Average Spans per Trace: {len(actual_traces) / len(trace_groups) if trace_groups else 0:.1f}")
-            
-            # Show trace breakdown by service
-            services = {}
-            for span in actual_traces:
-                service_name = span.get('resource', {}).get('service.name', 'unknown-service')
+                
+                # Count by service
+                service_name = span.get('resource_attributes', {}).get('service.name', 'unknown-service')
                 if service_name not in services:
                     services[service_name] = 0
                 services[service_name] += 1
+                
+                # Count by status
+                status = span.get('status', {}).get('code', 'UNSET')
+                status_counts[status] = status_counts.get(status, 0) + 1
             
-            print(f"  Services: {len(services)}")
-            for service, count in sorted(services.items()):
+            print(f"\n📊 TRACE SUMMARY:")
+            print(f"  Total Unique Traces: {len(trace_groups)}")
+            print(f"  Total Spans: {len(all_spans_flat)}")
+            print(f"  Average Spans per Trace: {len(all_spans_flat) / len(trace_groups) if trace_groups else 0:.1f}")
+            print(f"  Status Distribution: {status_counts}")
+            
+            # Show service breakdown
+            print(f"  Services ({len(services)}):")
+            for service, count in sorted(services.items(), key=lambda x: x[1], reverse=True):
                 print(f"    {service}: {count} spans")
             
             print(f"\n🔗 SAMPLE TRACES:")
@@ -338,24 +402,33 @@ class FullTelemetryDebugHandler(BaseHTTPRequestHandler):
                 print(f"  Spans: {len(spans)}")
                 
                 # Sort spans by start time
-                sorted_spans = sorted(spans, key=lambda s: s.get('start_time', 0))
+                sorted_spans = sorted(spans, key=lambda s: s.get('startTimeUnixNano', 0))
                 
-                for i, span in enumerate(sorted_spans):
-                    # Calculate duration
-                    duration_ns = span.get('duration_ns', 0)
-                    duration_ms = duration_ns / 1_000_000 if duration_ns else 0
+                # Calculate trace duration
+                if sorted_spans:
+                    trace_start = sorted_spans[0].get('startTimeUnixNano', 0)
+                    trace_end = max(span.get('endTimeUnixNano', 0) for span in sorted_spans)
+                    trace_duration_ms = (trace_end - trace_start) / 1_000_000 if trace_end > trace_start else 0
+                    print(f"  Total Duration: {trace_duration_ms:.2f}ms")
+                
+                for i, span in enumerate(sorted_spans[:5]):  # Show first 5 spans per trace
+                    # Calculate span duration
+                    start_time = span.get('startTimeUnixNano', 0)
+                    end_time = span.get('endTimeUnixNano', 0)
+                    duration_ms = (end_time - start_time) / 1_000_000 if end_time > start_time else 0
                     
                     # Extract key attributes
-                    resource = span.get('resource', {})
-                    attributes = span.get('attributes', {})
+                    resource_attrs = span.get('resource_attributes', {})
+                    span_attrs = span.get('attributes', {})
                     
                     # Format span info
-                    service_name = resource.get('service.name', 'unknown-service')
+                    service_name = resource_attrs.get('service.name', 'unknown-service')
                     operation_name = span.get('name', 'unknown-operation')
-                    status = span.get('status_code', 'UNSET')
+                    status = span.get('status', {}).get('code', 'UNSET')
                     
                     # Show indentation for child spans
-                    indent = "    " if span.get('parent_span_id', '0000000000000000') != '0000000000000000' else "  "
+                    parent_span_id = span.get('parentSpanId', '0000000000000000')
+                    indent = "    " if parent_span_id != '0000000000000000' else "  "
                     
                     print(f"{indent}Span {i+1}: {operation_name}")
                     print(f"{indent}  Service: {service_name}")
@@ -363,12 +436,17 @@ class FullTelemetryDebugHandler(BaseHTTPRequestHandler):
                     print(f"{indent}  Duration: {duration_ms:.2f}ms")
                     print(f"{indent}  Status: {status}")
                     
-                    if span.get('status_message'):
-                        print(f"{indent}  Message: {span.get('status_message')}")
+                    # Show status message if error
+                    status_message = span.get('status', {}).get('message')
+                    if status_message and status == 'ERROR':
+                        print(f"{indent}  Error: {status_message}")
                     
-                    # Show key attributes
-                    key_attrs = {k: v for k, v in attributes.items() 
-                               if k in ['http.method', 'http.url', 'http.status_code', 'db.statement', 'error']}
+                    # Show key HTTP/DB attributes
+                    key_attrs = {}
+                    for key in ['http.method', 'http.url', 'http.status_code', 'db.statement', 'db.system']:
+                        if key in span_attrs:
+                            key_attrs[key] = span_attrs[key]
+                    
                     if key_attrs:
                         attr_str = ", ".join([f"{k}={v}" for k, v in key_attrs.items()])
                         print(f"{indent}  Attributes: {attr_str}")
@@ -378,7 +456,17 @@ class FullTelemetryDebugHandler(BaseHTTPRequestHandler):
                     if events:
                         print(f"{indent}  Events: {len(events)} events")
                         for event in events[:2]:  # Show first 2 events
-                            print(f"{indent}    - {event.get('name', 'unnamed-event')}")
+                            event_name = event.get('name', 'unnamed-event')
+                            print(f"{indent}    - {event_name}")
+                    
+                    # Show links if any
+                    links = span.get('links', [])
+                    if links:
+                        print(f"{indent}  Links: {len(links)} links to other traces")
+                
+                if len(sorted_spans) > 5:
+                    remaining = len(sorted_spans) - 5
+                    print(f"  ... and {remaining} more spans in this trace")
                 
                 print("-" * 100)
             
@@ -388,38 +476,33 @@ class FullTelemetryDebugHandler(BaseHTTPRequestHandler):
             
             print(f"\n📈 TRACE STATISTICS:")
             
-            # Status distribution
-            status_counts = {}
-            error_count = 0
-            total_duration = 0
+            # Error analysis
+            error_spans = [span for span in all_spans_flat if span.get('status', {}).get('code') == 'ERROR']
+            error_rate = (len(error_spans) / len(all_spans_flat) * 100) if all_spans_flat else 0
             
-            for span in actual_traces:
-                status = span.get('status_code', 'UNSET')
-                status_counts[status] = status_counts.get(status, 0) + 1
-                
-                if status == 'ERROR':
-                    error_count += 1
-                
-                duration = span.get('duration_ns', 0)
-                total_duration += duration
+            # Duration analysis
+            total_duration = sum((span.get('endTimeUnixNano', 0) - span.get('startTimeUnixNano', 0)) 
+                               for span in all_spans_flat if span.get('endTimeUnixNano', 0) > span.get('startTimeUnixNano', 0))
+            avg_duration = (total_duration / len(all_spans_flat) / 1_000_000) if all_spans_flat else 0
             
-            print(f"  Status Distribution: {status_counts}")
-            print(f"  Error Rate: {(error_count / len(actual_traces) * 100):.1f}%" if actual_traces else "0%")
-            print(f"  Average Span Duration: {(total_duration / len(actual_traces) / 1_000_000):.2f}ms" if actual_traces else "0ms")
+            print(f"  Error Rate: {error_rate:.1f}% ({len(error_spans)} error spans)")
+            print(f"  Average Span Duration: {avg_duration:.2f}ms")
             
-            # Unique namespaces and pods from traces
+            # Unique Kubernetes resources
             namespaces = set()
             pods = set()
             
-            for span in actual_traces:
-                resource = span.get('resource', {})
-                if 'k8s.namespace.name' in resource:
-                    namespaces.add(resource['k8s.namespace.name'])
-                if 'k8s.pod.name' in resource:
-                    pods.add(resource['k8s.pod.name'])
+            for span in all_spans_flat:
+                resource_attrs = span.get('resource_attributes', {})
+                if 'k8s.namespace.name' in resource_attrs:
+                    namespaces.add(resource_attrs['k8s.namespace.name'])
+                if 'k8s.pod.name' in resource_attrs:
+                    pods.add(resource_attrs['k8s.pod.name'])
             
             print(f"  Unique Namespaces: {len(namespaces)} ({list(namespaces)})")
             print(f"  Unique Pods: {len(pods)}")
+            print(f"  Total Resource Groups: {len(actual_traces)}")
+            print(f"  Total Spans: {total_spans}")
             
         except Exception as e:
             print(f"Error parsing traces data: {e}")
@@ -432,7 +515,7 @@ class FullTelemetryDebugHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
-        response = {"status": "success", "source": "traces_handler", "spans_processed": len(actual_traces) if 'actual_traces' in locals() else 0}
+        response = {"status": "success", "source": "traces_handler", "spans_processed": total_spans if 'total_spans' in locals() else 0}
         self.wfile.write(json.dumps(response).encode())
 
     def handle_compression(self, raw_body):
@@ -542,7 +625,10 @@ def main():
     print("✨ Now handling ALL telemetry: metrics, logs, AND traces!")
     print("🎯 Will show Kubernetes events, pod logs, distributed traces, and all telemetry data")
     print("🗜️ GZIP/DEFLATE compression support enabled")
-    print("🔑 Custom headers support with masked authorization tokens\n")
+    print("🔑 Custom headers support with masked authorization tokens")
+    print("📋 OTLP-like hierarchical structure support")
+    print("🎨 Enhanced resource group visualization")
+    print("🔗 Advanced trace analysis with service maps, error tracking, and performance metrics\n")
     
     try:
         server.serve_forever()
